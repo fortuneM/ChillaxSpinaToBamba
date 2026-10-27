@@ -201,8 +201,9 @@ export function PlayerView() {
   const prize = currentRound?.prize;
   const myEntry = session.entries?.find((e) => e.player_token === playerToken);
   const myClaimedNumber = myEntry?.number;
-  const isWinner = status === 'RESULT' && myClaimedNumber === currentRound?.winningNumber;
-  const isLoser = status === 'RESULT' && myClaimedNumber !== currentRound?.winningNumber;
+  const isWinner = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber === currentRound?.winningNumber;
+  const isNoWinner = status === 'RESULT' && !currentRound?.hasWinner;
+  const isLoser = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber !== currentRound?.winningNumber;
 
   return (
     <div className="player-arena-container">
@@ -313,6 +314,18 @@ export function PlayerView() {
           </div>
           <p className="winner-instructions">
             Show this screen to the Chillax counter staff to redeem your prize!
+          </p>
+        </div>
+      )}
+
+      {isNoWinner && (
+        <div className="player-loser-card">
+          <h3 className="text-amber">No Winner This Round!</h3>
+          <p>
+            The wheel landed on <strong className="text-cyan">#{currentRound?.winningNumber}</strong>, but nobody claimed it!
+          </p>
+          <p className="text-muted text-sm">
+            Your pick was #{myClaimedNumber || 'none'}. Prize rolls over to next round!
           </p>
         </div>
       )}

@@ -124,8 +124,12 @@ export function TvView() {
     };
 
     const handleSpinResult = (data) => {
-      // Trigger burst celebration confetti
-      triggerConfetti();
+      if (data.hasWinner) {
+        triggerConfetti();
+        sounds.playFanfare();
+      } else {
+        sounds.playNoWinner();
+      }
     };
 
     socket.on('session:state', handleState);
@@ -222,6 +226,7 @@ export function TvView() {
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
   const isResultState = status === 'RESULT' && currentRound?.winningNumber;
+  const hasWinner = Boolean(currentRound?.hasWinner || currentRound?.winningEntryId);
 
   return (
     <div className="tv-root-container">
@@ -347,42 +352,70 @@ export function TvView() {
         </section>
       </main>
 
-      {/* Explosive Result Screen Overlay (Page 4 & 9) */}
+      {/* Result Screen Overlay (Winner or Unclaimed) */}
       {isResultState && (
         <div className="tv-result-overlay">
-          <div className="tv-result-card animate-pop-in">
-            <div className="result-sparkles">
-              <Sparkles size={48} className="text-gold spin-slow" />
-            </div>
-            <div className="result-headline">WE HAVE A WINNER!</div>
-
-            <div className="result-number-pod">
-              <span className="result-num-label">LUCKY NUMBER</span>
-              <span className="result-big-number">#{currentRound.winningNumber}</span>
-            </div>
-
-            {/* Winner nickname */}
-            {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname && (
-              <div className="result-player-name">
-                {session.entries.find(e => e.number === currentRound.winningNumber)?.nickname}
+          {hasWinner ? (
+            <div className="tv-result-card animate-pop-in">
+              <div className="result-sparkles">
+                <Sparkles size={48} className="text-gold spin-slow" />
               </div>
-            )}
+              <div className="result-headline">WE HAVE A WINNER!</div>
 
-            {/* Prize Won */}
-            {prize && (
-              <div className="result-prize-box">
-                <span className="result-won-label">WINS PRIZE:</span>
-                <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
-                  {prize.name}
-                </span>
-                <span className="result-prize-val">{prize.description}</span>
+              <div className="result-number-pod">
+                <span className="result-num-label">WINNING NUMBER</span>
+                <span className="result-big-number">#{currentRound.winningNumber}</span>
               </div>
-            )}
 
-            <div className="result-footer-instructions">
-              Please present your winning phone screen to the Chillax front desk to redeem!
+              {/* Winner nickname */}
+              {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname && (
+                <div className="result-player-name">
+                  {session.entries.find(e => e.number === currentRound.winningNumber)?.nickname}
+                </div>
+              )}
+
+              {/* Prize Won */}
+              {prize && (
+                <div className="result-prize-box">
+                  <span className="result-won-label">WINS PRIZE:</span>
+                  <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
+                    {prize.name}
+                  </span>
+                  <span className="result-prize-val">{prize.description}</span>
+                </div>
+              )}
+
+              <div className="result-footer-instructions">
+                Please present your winning phone screen to the Chillax front desk to redeem!
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="tv-result-card tv-no-winner-card animate-pop-in">
+              <div className="result-headline text-danger">NO WINNER THIS ROUND!</div>
+
+              <div className="result-number-pod border-danger">
+                <span className="result-num-label">LANDED ON NUMBER</span>
+                <span className="result-big-number">#{currentRound.winningNumber}</span>
+              </div>
+
+              <div className="result-unclaimed-notice">
+                The wheel landed on <strong>#{currentRound.winningNumber}</strong>, but no player claimed it!
+              </div>
+
+              {prize && (
+                <div className="result-prize-box">
+                  <span className="result-won-label text-gold">PRIZE ROLLS OVER:</span>
+                  <span className="result-prize-title" style={{ color: prize.color || '#00f2fe' }}>
+                    {prize.name}
+                  </span>
+                </div>
+              )}
+
+              <div className="result-footer-instructions">
+                Better luck next round! Prepare your numbers on your phone...
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

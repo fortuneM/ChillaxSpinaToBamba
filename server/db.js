@@ -29,9 +29,16 @@ db.exec(`
     host_pin TEXT NOT NULL DEFAULT '1234',
     tv_connected INTEGER NOT NULL DEFAULT 0,
     tv_pairing_code TEXT,
+    winner_mode TEXT NOT NULL DEFAULT 'TRUE_ODDS',
     settings_json TEXT NOT NULL DEFAULT '{}'
   );
+`);
 
+try {
+  db.exec("ALTER TABLE sessions ADD COLUMN winner_mode TEXT DEFAULT 'TRUE_ODDS';");
+} catch(e) {}
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS prizes (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

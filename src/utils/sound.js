@@ -49,9 +49,7 @@ class SoundManager {
 
       osc.start();
       osc.stop(this.ctx.currentTime + 0.04);
-    } catch {
-      // AudioContext policy catch
-    }
+    } catch {}
   }
 
   // UI button click
@@ -102,6 +100,35 @@ class SoundManager {
     } catch {}
   }
 
+  // Dramatic descending buzzer chime when wheel lands on an unclaimed number
+  playNoWinner() {
+    if (this.muted) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+
+      const tones = [350, 310, 270, 210];
+      tones.forEach((freq, idx) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const t = this.ctx.currentTime + idx * 0.18;
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, t);
+        osc.frequency.linearRampToValueAtTime(freq - 25, t + 0.16);
+
+        gain.gain.setValueAtTime(0.18, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(t);
+        osc.stop(t + 0.17);
+      });
+    } catch {}
+  }
+
   // Suspenseful spin ticking sequence matching acceleration and deceleration
   startSpinSounds(durationMs = 6500) {
     if (this.muted) return;
@@ -109,7 +136,7 @@ class SoundManager {
     this.init();
 
     const startTime = Date.now();
-    let currentDelay = 40; // Starts fast (40ms interval)
+    let currentDelay = 40;
 
     const tick = () => {
       const elapsed = Date.now() - startTime;
@@ -118,12 +145,9 @@ class SoundManager {
       }
 
       const progress = elapsed / durationMs;
-      // Frequency and delay ramp up as wheel slows down
       if (progress < 0.6) {
-        // High speed cruising
         currentDelay = 50 + progress * 60;
       } else {
-        // Dramatic deceleration
         const decelFactor = (progress - 0.6) / 0.4;
         currentDelay = 110 + Math.pow(decelFactor, 2.5) * 550;
       }
@@ -151,7 +175,7 @@ class SoundManager {
       this.init();
       if (!this.ctx) return;
 
-      const notes = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99, 1046.50]; // C, E, G, C5, E5, G5, C6
+      const notes = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99, 1046.50];
       const noteDelay = 0.09;
 
       notes.forEach((freq, idx) => {

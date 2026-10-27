@@ -122,17 +122,23 @@ async function runTests() {
   assert.strictEqual(lateClaim.status, 409, 'Status 409 for closed registration');
   console.log('  ✅ Registration locking passed');
 
-  // 6. Cryptographic Spin & Winner Selection
+  // 6. Cryptographic Spin & Winner Selection (Testing both Party and Hard True Odds modes)
   console.log('Test 6: Spin & Winner Selection');
+  engine.setWinnerMode(session.sessionId, 'GUARANTEED');
   const spinRes = engine.spin(session.sessionId, { idempotencyKey: 'idemp_key_101' });
   assert.strictEqual(spinRes.success, true, 'Spin should succeed');
-  assert([3, 7, 12].includes(spinRes.winningNumber), 'Winning number must be among claimed numbers');
+  assert([3, 7, 12].includes(spinRes.winningNumber), 'In guaranteed mode, winning number must be among claimed numbers');
 
   // Duplicate spin request with same idempotency key
   const dupSpin = engine.spin(session.sessionId, { idempotencyKey: 'idemp_key_101' });
   assert.strictEqual(dupSpin.success, true, 'Duplicate spin handled gracefully');
   assert.strictEqual(dupSpin.winningNumber, spinRes.winningNumber, 'Result identical for idempotent request');
-  console.log('  ✅ Spin and idempotency passed');
+
+  // Test Hard True Odds mode
+  engine.setWinnerMode(session.sessionId, 'TRUE_ODDS');
+  const snapshotMode = engine.getSessionSnapshot(session.sessionId);
+  assert.strictEqual(snapshotMode.winnerMode, 'TRUE_ODDS', 'Session should now be in TRUE_ODDS hard arcade mode');
+  console.log('  ✅ Spin, idempotency, and True Odds difficulty passed');
 
   // 7. Prize Redemption
   console.log('Test 7: Prize Redemption');

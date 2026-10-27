@@ -418,27 +418,41 @@ export function HostView() {
 
         {isResult && (
           <div className="host-result-actions-card">
-            <div className="result-announcement">
-              <span className="result-num-pill">#{currentRound.winningNumber}</span>
-              <div className="result-details">
-                <strong>WINNER: {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname || 'Player'}</strong>
-                <span>Prize: {prize?.name}</span>
-              </div>
-            </div>
+            {currentRound?.hasWinner || session.entries?.some(e => e.number === currentRound?.winningNumber) ? (
+              <>
+                <div className="result-announcement">
+                  <span className="result-num-pill">#{currentRound.winningNumber}</span>
+                  <div className="result-details">
+                    <strong>WINNER: {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname || 'Player'}</strong>
+                    <span>Prize: {prize?.name}</span>
+                  </div>
+                </div>
 
-            {/* Prize Redemption Button (Page 10) */}
-            <div className="host-redemption-box">
-              <input
-                type="text"
-                placeholder="Optional cashier notes (e.g. delivered snack)"
-                value={redeemNotes}
-                onChange={(e) => setRedeemNotes(e.target.value)}
-                className="redeem-notes-input"
-              />
-              <button onClick={handleRedeemPrize} className="arcade-btn-success w-full">
-                <CheckCircle2 size={18} className="inline-icon" /> Mark Prize as Redeemed
-              </button>
-            </div>
+                {/* Prize Redemption Button (Page 10) */}
+                <div className="host-redemption-box">
+                  <input
+                    type="text"
+                    placeholder="Optional cashier notes (e.g. delivered snack)"
+                    value={redeemNotes}
+                    onChange={(e) => setRedeemNotes(e.target.value)}
+                    className="redeem-notes-input"
+                  />
+                  <button onClick={handleRedeemPrize} className="arcade-btn-success w-full">
+                    <CheckCircle2 size={18} className="inline-icon" /> Mark Prize as Redeemed
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="result-announcement">
+                <span className="result-num-pill" style={{ background: '#ef4444', color: '#fff' }}>
+                  #{currentRound.winningNumber}
+                </span>
+                <div className="result-details">
+                  <strong className="text-danger">NO WINNER THIS ROUND</strong>
+                  <span className="text-muted">Landed on unclaimed number #{currentRound.winningNumber}. Prize carries over!</span>
+                </div>
+              </div>
+            )}
 
             {/* Next Round */}
             <div className="host-next-round-section">
@@ -460,6 +474,39 @@ export function HostView() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Difficulty Mode Control */}
+      <div className="host-setup-card">
+        <div className="flex justify-between items-center mb-1">
+          <h4 className="text-sm font-bold text-cyan">WINNER DIFFICULTY MODE</h4>
+          <span className="text-xs text-gold">
+            {session.winnerMode === 'TRUE_ODDS' ? '🎯 Hard (Arcade Odds)' : '🎁 Easy (Always Wins)'}
+          </span>
+        </div>
+        <div className="range-selector-row">
+          <button
+            type="button"
+            className={`range-pill ${session.winnerMode !== 'GUARANTEED' ? 'active' : ''}`}
+            onClick={async () => {
+              await apiRequest(`/api/sessions/${session.sessionId}/mode`, 'POST', { mode: 'TRUE_ODDS' });
+            }}
+          >
+            🎯 Hard (1 in {session.numberRange.max} Odds)
+          </button>
+          <button
+            type="button"
+            className={`range-pill ${session.winnerMode === 'GUARANTEED' ? 'active' : ''}`}
+            onClick={async () => {
+              await apiRequest(`/api/sessions/${session.sessionId}/mode`, 'POST', { mode: 'GUARANTEED' });
+            }}
+          >
+            🎁 Party (Guaranteed Winner)
+          </button>
+        </div>
+        <p className="text-xs text-muted mt-1">
+          In <strong>Hard Mode</strong>, the wheel spins across all numbers (1–{session.numberRange.max}). If it lands on an unclaimed number, there is NO WINNER.
+        </p>
       </div>
 
       {/* Number Claims Grid Monitor */}

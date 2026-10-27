@@ -152,6 +152,13 @@ app.post('/api/sessions/:id/reopen-registration', requireHostAuth, (req, res) =>
   res.json(result);
 });
 
+// POST /api/sessions/:id/mode: Toggle winner difficulty mode (Host)
+app.post('/api/sessions/:id/mode', requireHostAuth, (req, res) => {
+  const { mode } = req.body;
+  const result = engine.setWinnerMode(req.params.id, mode);
+  res.json(result);
+});
+
 // POST /api/sessions/:id/spin: Trigger spin and select winner (Host)
 app.post('/api/sessions/:id/spin', requireHostAuth, (req, res) => {
   const idempotencyKey = req.headers['idempotency-key'] || req.body?.idempotencyKey;

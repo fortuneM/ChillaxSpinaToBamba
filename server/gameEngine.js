@@ -88,6 +88,10 @@ export class GameEngine {
 
     const claimedNumbers = entries.map(e => e.number);
 
+    const winningEntry = currentRound && currentRound.winning_entry_id
+      ? db.prepare('SELECT * FROM entries WHERE id = ?').get(currentRound.winning_entry_id)
+      : null;
+
     return {
       sessionId: session.id,
       shortCode: session.short_code,
@@ -96,6 +100,7 @@ export class GameEngine {
         min: session.number_min,
         max: session.number_max
       },
+      winnerMode: session.winner_mode || 'TRUE_ODDS',
       playerCount: entries.length,
       claimedNumbers,
       entries,
@@ -105,6 +110,8 @@ export class GameEngine {
         status: currentRound.status,
         winningNumber: currentRound.winning_number,
         winningEntryId: currentRound.winning_entry_id,
+        hasWinner: Boolean(currentRound.winning_entry_id),
+        winnerNickname: winningEntry ? winningEntry.nickname : null,
         prize: prize || (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null),
         startedAt: currentRound.started_at,
         resultAt: currentRound.result_at,
@@ -362,14 +369,25 @@ export class GameEngine {
       };
     }
 
-    // Specification Page 5 & 13:
-    // "Uniform random selection among claimed numbers. The player holding that number wins the prize attached to the round."
-    // Select uniformly using crypto.randomInt
-    const winningIndex = crypto.randomInt(0, entries.length);
-    const winningEntry = entries[winningIndex];
-    const winningNumber = winningEntry.number;
-    const spinDurationMs = 6500; // 6.5s dramatic arcade spin
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    const winnerMode = session?.winner_mode || 'TRUE_ODDS';
 
+    let winningNumber;
+    let winningEntry = null;
+
+    if (winnerMode === 'GUARANTEED' && entries.length > 0) {
+      // Party / guaranteed promo mode: selects among claimed numbers
+      const winningIndex = crypto.randomInt(0, entries.length);
+      winningEntry = entries[winningIndex];
+      winningNumber = winningEntry.number;
+    } else {
+      // Default: TRUE_ODDS (Hard arcade challenge: selection across ALL numbers in wheel range!)
+      // If the wheel lands on an unclaimed number, there is NO WINNER this round!
+      winningNumber = crypto.randomInt(session.number_min, session.number_max + 1);
+      winningEntry = entries.find(e => e.number === winningNumber) || null;
+    }
+
+    const spinDurationMs = 6500; // 6.5s dramatic arcade spin
     const now = new Date().toISOString();
 
     // Persist result immediately before broadcasting (Page 8 data integrity rule)
@@ -381,14 +399,15 @@ export class GameEngine {
           started_at = ?,
           idempotency_key = ?
       WHERE id = ?
-    `).run(winningNumber, winningEntry.id, now, idempotencyKey || 'spin_' + Date.now(), currentRound.id);
+    `).run(winningNumber, winningEntry ? winningEntry.id : null, now, idempotencyKey || 'spin_' + Date.now(), currentRound.id);
 
     db.prepare(`UPDATE sessions SET status = 'SPINNING' WHERE id = ?`).run(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'SPIN_STARTED', {
       roundId: currentRound.id,
       winningNumber,
-      winningPlayer: winningEntry.nickname,
+      hasWinner: Boolean(winningEntry),
+      winningPlayer: winningEntry ? winningEntry.nickname : null,
       idempotencyKey
     });
 
@@ -397,6 +416,7 @@ export class GameEngine {
       roundId: currentRound.id,
       winningNumber,
       spinDurationMs,
+      hasWinner: Boolean(winningEntry),
       eligibleNumbers: entries.map(e => e.number)
     });
     this.broadcastSessionState(sessionId);
@@ -409,22 +429,26 @@ export class GameEngine {
         db.prepare(`UPDATE rounds SET status = 'RESULT', result_at = ? WHERE id = ?`).run(resultTime, currentRound.id);
         db.prepare(`UPDATE sessions SET status = 'RESULT' WHERE id = ?`).run(sessionId);
 
-        // Fetch prize
-        const prize = activeRound.prize_id 
-          ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(activeRound.prize_id)
-          : (activeRound.prize_snapshot_json ? JSON.parse(activeRound.prize_snapshot_json) : null);
+        // Fetch prize only if there is an active winning entry
+        const prize = winningEntry
+          ? (activeRound.prize_id 
+              ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(activeRound.prize_id)
+              : (activeRound.prize_snapshot_json ? JSON.parse(activeRound.prize_snapshot_json) : null))
+          : null;
 
         logAudit(sessionId, 'SERVER', 'engine', 'SPIN_RESULT', {
           winningNumber,
-          winningPlayer: winningEntry.nickname,
-          winningToken: winningEntry.player_token
+          hasWinner: Boolean(winningEntry),
+          winningPlayer: winningEntry ? winningEntry.nickname : null,
+          winningToken: winningEntry ? winningEntry.player_token : null
         });
 
         this.io.to(sessionId).emit('spin:result', {
           roundId: currentRound.id,
           winningNumber,
-          winnerNickname: winningEntry.nickname,
-          winnerToken: winningEntry.player_token,
+          hasWinner: Boolean(winningEntry),
+          winnerNickname: winningEntry ? winningEntry.nickname : null,
+          winnerToken: winningEntry ? winningEntry.player_token : null,
           prize
         });
         this.broadcastSessionState(sessionId);
@@ -435,8 +459,19 @@ export class GameEngine {
       success: true,
       winningNumber,
       spinDurationMs,
-      winningNickname: winningEntry.nickname
+      hasWinner: Boolean(winningEntry),
+      winningNickname: winningEntry ? winningEntry.nickname : null
     };
+  }
+
+  // Toggle difficulty mode (TRUE_ODDS vs GUARANTEED)
+  setWinnerMode(sessionId, mode) {
+    const validModes = ['TRUE_ODDS', 'GUARANTEED'];
+    const chosenMode = validModes.includes(mode) ? mode : 'TRUE_ODDS';
+    db.prepare('UPDATE sessions SET winner_mode = ? WHERE id = ?').run(chosenMode, sessionId);
+    logAudit(sessionId, 'HOST', 'host', 'WINNER_MODE_CHANGED', { winnerMode: chosenMode });
+    this.broadcastSessionState(sessionId);
+    return { success: true, winnerMode: chosenMode };
   }
 
   // Create next round
