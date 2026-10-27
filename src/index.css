@@ -129,7 +129,7 @@ body {
   transition: all 0.2s ease;
 }
 
-/* Animations */
+/* Keyframe Animations */
 @keyframes spinSlow {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -137,7 +137,7 @@ body {
 
 @keyframes pulseGlow {
   0%, 100% { opacity: 0.6; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.05); }
+  50% { opacity: 1; transform: scale(1.04); }
 }
 
 @keyframes popIn {
@@ -147,8 +147,8 @@ body {
 
 @keyframes pointerWiggle {
   0%, 100% { transform: translateX(-50%) rotate(0deg); }
-  25% { transform: translateX(-50%) rotate(4deg); }
-  75% { transform: translateX(-50%) rotate(-4deg); }
+  25% { transform: translateX(-50%) rotate(5deg); }
+  75% { transform: translateX(-50%) rotate(-5deg); }
 }
 
 .icon-spin {
@@ -170,7 +170,7 @@ body {
 }
 
 /* ========================================================= */
-/* 1. TV SCREEN VIEW (16:9 Android TV Layout)                */
+/* 1. TV SCREEN VIEW (16:9 Perfectly Centered & Aligned)      */
 /* ========================================================= */
 .tv-root-container {
   display: flex;
@@ -182,26 +182,39 @@ body {
   position: relative;
 }
 
+/* Symmetrical Grid Header for perfect center alignment */
 .tv-header-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  padding: 1.25rem 2.5rem;
-  background: rgba(12, 20, 39, 0.85);
+  padding: 0.85rem 2.5rem;
+  background: rgba(12, 20, 39, 0.88);
   border-bottom: 2px solid rgba(0, 242, 254, 0.2);
   backdrop-filter: blur(12px);
   z-index: 10;
 }
 
 .tv-brand-wrapper {
+  justify-self: start;
   display: flex;
   align-items: center;
   gap: 1rem;
 }
 
+.tv-status-badge-wrapper {
+  justify-self: center;
+}
+
+.tv-header-right {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
 .tv-logo-primary {
   font-family: var(--font-arcade);
-  font-size: 2rem;
+  font-size: 1.85rem;
   font-weight: 900;
   letter-spacing: 2px;
   background: linear-gradient(135deg, #00f2fe 0%, #8b5cf6 100%);
@@ -212,7 +225,7 @@ body {
 
 .tv-logo-tag {
   font-family: var(--font-arcade);
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: #f59e0b;
   letter-spacing: 1px;
@@ -222,7 +235,7 @@ body {
   background: rgba(139, 92, 246, 0.25);
   border: 1px solid var(--neon-purple);
   color: #ddd6fe;
-  padding: 0.35rem 0.85rem;
+  padding: 0.3rem 0.8rem;
   border-radius: 20px;
   font-family: var(--font-arcade);
   font-size: 0.85rem;
@@ -233,9 +246,9 @@ body {
   display: flex;
   align-items: center;
   font-family: var(--font-arcade);
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 800;
-  padding: 0.6rem 1.4rem;
+  padding: 0.5rem 1.35rem;
   border-radius: 30px;
   letter-spacing: 1px;
 }
@@ -269,18 +282,12 @@ body {
   box-shadow: 0 0 25px rgba(245, 158, 11, 0.6);
 }
 
-.tv-header-right {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-}
-
 .tv-players-counter {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-family: var(--font-arcade);
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   color: #f1f5f9;
 }
 
@@ -291,22 +298,26 @@ body {
   padding: 0.5rem;
   border-radius: 8px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* TV Main Arena Layout */
 .tv-arena {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 340px 1fr;
   flex: 1;
-  padding: 1.5rem 2.5rem;
+  padding: 1rem 2.5rem 1.5rem;
   gap: 2.5rem;
   align-items: center;
+  max-height: calc(100vh - 75px);
 }
 
 .tv-join-panel {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.25rem;
   z-index: 5;
 }
 
@@ -314,7 +325,7 @@ body {
   background: rgba(15, 23, 42, 0.75);
   border: 2px solid rgba(0, 242, 254, 0.3);
   border-radius: 18px;
-  padding: 1.5rem;
+  padding: 1.25rem;
   text-align: center;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(10px);
@@ -322,15 +333,15 @@ body {
 
 .join-panel-heading {
   font-family: var(--font-arcade);
-  font-size: 1.25rem;
+  font-size: 1.15rem;
   letter-spacing: 1px;
   color: var(--neon-cyan);
-  margin-bottom: 1rem;
+  margin-bottom: 0.85rem;
 }
 
 .tv-qr-box {
   background: #070d1e;
-  padding: 0.75rem;
+  padding: 0.6rem;
   border-radius: 12px;
   display: inline-block;
   border: 1px solid rgba(0, 242, 254, 0.4);
@@ -338,46 +349,46 @@ body {
 }
 
 .tv-qr-image {
-  width: 190px;
-  height: 190px;
+  width: 175px;
+  height: 175px;
   display: block;
 }
 
 .tv-join-code-box {
-  margin-top: 1rem;
+  margin-top: 0.85rem;
   background: rgba(0, 242, 254, 0.1);
   border: 1px solid var(--neon-cyan);
   border-radius: 10px;
-  padding: 0.5rem;
+  padding: 0.45rem;
 }
 
 .code-label {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   letter-spacing: 1px;
 }
 
 .code-value {
   font-family: var(--font-arcade);
-  font-size: 2.2rem;
+  font-size: 2rem;
   font-weight: 900;
   color: var(--neon-cyan);
   letter-spacing: 4px;
 }
 
 .tv-join-instruction {
-  margin-top: 0.75rem;
-  font-size: 0.95rem;
+  margin-top: 0.65rem;
+  font-size: 0.9rem;
   color: var(--text-secondary);
-  line-height: 1.4;
+  line-height: 1.35;
 }
 
 .tv-prize-spotlight {
   background: rgba(15, 23, 42, 0.75);
   border-left: 5px solid var(--neon-gold);
   border-radius: 12px;
-  padding: 1.25rem;
+  padding: 1rem 1.25rem;
   box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
 }
 
@@ -386,17 +397,17 @@ body {
   font-size: 0.75rem;
   letter-spacing: 1px;
   color: var(--neon-gold);
-  margin-bottom: 0.35rem;
-}
-
-.prize-spotlight-name {
-  font-size: 1.3rem;
-  font-weight: 700;
   margin-bottom: 0.25rem;
 }
 
+.prize-spotlight-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 0.2rem;
+}
+
 .prize-spotlight-desc {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--text-secondary);
 }
 
@@ -411,8 +422,8 @@ body {
 
 .arcade-wheel-container {
   position: relative;
-  width: 580px;
-  height: 580px;
+  width: 520px;
+  height: 520px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -420,32 +431,70 @@ body {
 
 .wheel-pointer {
   position: absolute;
-  top: -24px;
+  top: -12px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 20;
-  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.7));
+  z-index: 25;
 }
 
 .wheel-pointer.pointer-wiggling {
-  animation: pointerWiggle 0.12s infinite;
+  animation: pointerWiggle 0.1s infinite;
 }
 
 .wheel-rotating-wrapper {
-  width: 580px;
-  height: 580px;
+  width: 520px;
+  height: 520px;
   display: flex;
   align-items: center;
   justify-content: center;
   transform-origin: center center;
 }
 
+/* Stationary Hub that stays upright and level */
+.wheel-stationary-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #0e172e 60%, #070d1e 100%);
+  border: 4px solid var(--neon-cyan);
+  box-shadow: 0 0 20px rgba(0, 242, 254, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.hub-inner-glow {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #2e1065 40%, #1e1b4b 100%);
+  border: 2px solid var(--neon-purple);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hub-brand-text {
+  font-family: var(--font-arcade);
+  font-size: 0.8rem;
+  font-weight: 900;
+  color: var(--neon-cyan);
+  letter-spacing: 1.5px;
+  text-shadow: 0 0 8px var(--neon-cyan);
+}
+
 .wheel-ambient-glow {
   position: absolute;
-  width: 590px;
-  height: 590px;
+  width: 530px;
+  height: 530px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(0, 242, 254, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(0, 242, 254, 0.18) 0%, transparent 70%);
   pointer-events: none;
   z-index: 1;
 }
@@ -456,14 +505,14 @@ body {
 }
 
 .tv-wheel-caption {
-  margin-top: 1.25rem;
+  margin-top: 1rem;
   text-align: center;
-  min-height: 35px;
+  min-height: 30px;
 }
 
 .caption-text {
   font-family: var(--font-arcade);
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   color: #cbd5e1;
   letter-spacing: 0.5px;
 }
@@ -477,7 +526,7 @@ body {
 .tv-result-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(6, 10, 23, 0.85);
+  background: rgba(6, 10, 23, 0.88);
   backdrop-filter: blur(14px);
   display: flex;
   align-items: center;
@@ -489,20 +538,20 @@ body {
   background: linear-gradient(145deg, #0d162d 0%, #171d3d 100%);
   border: 3px solid var(--neon-gold);
   border-radius: 28px;
-  padding: 3rem 4.5rem;
+  padding: 2.75rem 4rem;
   text-align: center;
-  max-width: 680px;
+  max-width: 660px;
   width: 90%;
   box-shadow: 0 0 60px rgba(245, 158, 11, 0.5), inset 0 0 30px rgba(245, 158, 11, 0.2);
 }
 
 .result-headline {
   font-family: var(--font-arcade);
-  font-size: 2.2rem;
+  font-size: 2.1rem;
   font-weight: 900;
   color: #fef08a;
   letter-spacing: 2px;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .result-number-pod {
@@ -535,7 +584,7 @@ body {
   font-size: 2rem;
   font-weight: 800;
   color: #38bdf8;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .result-prize-box {
@@ -543,7 +592,7 @@ body {
   border: 1.5px solid rgba(255, 255, 255, 0.15);
   border-radius: 14px;
   padding: 1.25rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 
 .result-won-label {
@@ -556,19 +605,19 @@ body {
 }
 
 .result-prize-title {
-  font-size: 1.8rem;
+  font-size: 1.7rem;
   font-weight: 800;
   display: block;
   margin-bottom: 0.35rem;
 }
 
 .result-prize-val {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   color: #94a3b8;
 }
 
 .result-footer-instructions {
-  font-size: 1rem;
+  font-size: 0.95rem;
   color: #cbd5e1;
   font-style: italic;
 }
@@ -1702,11 +1751,12 @@ body {
   color: var(--text-muted);
 }
 
-/* Mobile Responsiveness for TV view in smaller preview window */
+/* Mobile & Window Responsiveness */
 @media (max-width: 950px) {
   .tv-arena {
     grid-template-columns: 1fr;
-    gap: 1.5rem;
+    gap: 1.25rem;
+    overflow-y: auto;
   }
   .tv-join-panel {
     order: 2;
@@ -1725,5 +1775,9 @@ body {
   .wheel-rotating-wrapper svg {
     width: 380px;
     height: 380px;
+  }
+  .wheel-ambient-glow {
+    width: 390px;
+    height: 390px;
   }
 }

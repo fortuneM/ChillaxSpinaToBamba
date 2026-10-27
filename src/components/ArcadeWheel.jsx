@@ -1,18 +1,18 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { sounds } from '../utils/sound';
 
-// Curated high-contrast arcade color palette for segments
+// High-contrast arcade neon palette for wheel segments
 const SEGMENT_COLORS = [
-  '#06b6d4', // Cyan
-  '#8b5cf6', // Violet
-  '#ec4899', // Pink
-  '#f59e0b', // Amber
-  '#10b981', // Emerald
-  '#3b82f6', // Blue
-  '#a855f7', // Purple
-  '#ef4444', // Red-orange
-  '#14b8a6', // Teal
-  '#eab308'  // Golden yellow
+  '#06b6d4', // Vibrant Cyan
+  '#8b5cf6', // Electric Violet
+  '#ec4899', // Hot Pink
+  '#f59e0b', // Radiant Amber
+  '#10b981', // Emerald Green
+  '#3b82f6', // Arcade Blue
+  '#a855f7', // Vivid Purple
+  '#ef4444', // Neon Coral
+  '#14b8a6', // Deep Teal
+  '#eab308'  // Goldenrod
 ];
 
 export function ArcadeWheel({
@@ -31,7 +31,14 @@ export function ArcadeWheel({
   const totalSegments = Math.max(1, max - min + 1);
   const segmentAngle = 360 / totalSegments;
 
-  // Generate segments data
+  // Wheel dimensions
+  const wheelSize = 520;
+  const radius = wheelSize / 2;
+  const outerRimRadius = radius - 8;
+  const innerTrackRadius = outerRimRadius - 22;
+
+  // Generate segments data with perfect alignment
+  // Slice k center is at angle (k * segmentAngle) clockwise from top (12 o'clock)
   const segments = useMemo(() => {
     const list = [];
     for (let i = 0; i < totalSegments; i++) {
@@ -48,7 +55,7 @@ export function ArcadeWheel({
       });
     }
     return list;
-  }, [min, max, totalSegments, claimedNumbers, winningNumber]);
+  }, [min, totalSegments, claimedNumbers, winningNumber]);
 
   // Handle spin trigger
   useEffect(() => {
@@ -56,22 +63,22 @@ export function ArcadeWheel({
       isCurrentlySpinningRef.current = true;
       sounds.startSpinSounds(spinDurationMs);
 
-      // Target slice calculation:
-      // Slice k center is at (k + 0.5) * segmentAngle from top (0 deg)
+      // Slice k is centered at angle (k * segmentAngle) clockwise from 12 o'clock
       const winningIndex = winningNumber - min;
-      const targetCenterAngle = (winningIndex + 0.5) * segmentAngle;
+      const targetSliceCenterAngle = winningIndex * segmentAngle;
 
-      // Current normalized angle mod 360
+      // To bring targetSliceCenterAngle to top (0 deg / 12 o'clock),
+      // we need: (finalRotation + targetSliceCenterAngle) % 360 === 0
+      // So finalRotation mod 360 = (360 - (targetSliceCenterAngle % 360)) % 360
       const currentNorm = currentRotationRef.current % 360;
-      // We want: (currentRotation + totalDelta) % 360 = (360 - targetCenterAngle) % 360
-      const desiredAngleNorm = (360 - (targetCenterAngle % 360)) % 360;
+      const desiredNorm = (360 - (targetSliceCenterAngle % 360)) % 360;
 
-      let delta = desiredAngleNorm - currentNorm;
+      let delta = desiredNorm - currentNorm;
       if (delta <= 0) {
         delta += 360;
       }
 
-      // Add 6 full 360-degree spins for maximum suspense
+      // 6 full 360-degree spins for maximum arcade suspense
       const fullRotations = 6 * 360;
       const finalRotation = currentRotationRef.current + fullRotations + delta;
 
@@ -89,58 +96,59 @@ export function ArcadeWheel({
     }
   }, [isSpinning, winningNumber, min, segmentAngle, spinDurationMs, onSpinComplete]);
 
-  // Helper to create SVG arc slice path
-  const createSlicePath = (index, total, radius) => {
-    const startAngle = (index * segmentAngle - 90) * (Math.PI / 180);
-    const endAngle = ((index + 1) * segmentAngle - 90) * (Math.PI / 180);
+  // Create SVG slice path centered on slice k
+  // In standard SVG math (0 deg = 3 o'clock):
+  // 12 o'clock is -90 deg.
+  // Center of slice k is at -90 + (k * segmentAngle) deg.
+  // Slice spans from center - segmentAngle/2 to center + segmentAngle/2!
+  const createSlicePath = (index, r) => {
+    const centerDeg = -90 + index * segmentAngle;
+    const startAngle = (centerDeg - segmentAngle / 2) * (Math.PI / 180);
+    const endAngle = (centerDeg + segmentAngle / 2) * (Math.PI / 180);
 
-    const x1 = radius + radius * Math.cos(startAngle);
-    const y1 = radius + radius * Math.sin(startAngle);
-    const x2 = radius + radius * Math.cos(endAngle);
-    const y2 = radius + radius * Math.sin(endAngle);
+    const x1 = radius + r * Math.cos(startAngle);
+    const y1 = radius + r * Math.sin(startAngle);
+    const x2 = radius + r * Math.cos(endAngle);
+    const y2 = radius + r * Math.sin(endAngle);
 
     const largeArc = segmentAngle > 180 ? 1 : 0;
-    return `M ${radius} ${radius} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+    return `M ${radius} ${radius} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
   };
-
-  const wheelSize = 580;
-  const radius = wheelSize / 2;
-  const outerRimRadius = radius - 8;
-  const innerTrackRadius = outerRimRadius - 24;
 
   return (
     <div className="arcade-wheel-container">
-      {/* Top Fixed Pointer with Neon Glow */}
+      {/* Top Fixed Pointer perfectly aligned with 12 o'clock */}
       <div className={`wheel-pointer ${isSpinning ? 'pointer-wiggling' : ''}`}>
-        <svg width="48" height="58" viewBox="0 0 48 58">
+        <svg width="44" height="52" viewBox="0 0 44 52">
           <defs>
-            <filter id="pointer-glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="4" stdDeviation="6" floodColor="#f59e0b" floodOpacity="0.8" />
+            <filter id="pointer-shadow" x="-30%" y="-30%" width="160%" height="160%">
+              <feDropShadow dx="0" dy="3" stdDeviation="5" floodColor="#f59e0b" floodOpacity="0.9" />
             </filter>
-            <linearGradient id="pointer-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <linearGradient id="pointer-gold-grad" x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stopColor="#fef08a" />
               <stop offset="50%" stopColor="#f59e0b" />
-              <stop offset="100%" stopColor="#b45309" />
+              <stop offset="100%" stopColor="#d97706" />
             </linearGradient>
           </defs>
+          {/* Sharp pointer indicator */}
           <polygon
-            points="24,54 6,10 42,10"
-            fill="url(#pointer-grad)"
+            points="22,48 4,8 40,8"
+            fill="url(#pointer-gold-grad)"
             stroke="#ffffff"
-            strokeWidth="3"
-            filter="url(#pointer-glow)"
+            strokeWidth="2.5"
+            filter="url(#pointer-shadow)"
           />
-          <circle cx="24" cy="18" r="6" fill="#0f172a" stroke="#ffffff" strokeWidth="2" />
+          <circle cx="22" cy="16" r="5" fill="#070d1e" stroke="#fef08a" strokeWidth="2" />
         </svg>
       </div>
 
-      {/* Rotating Wheel Wrapper */}
+      {/* Rotating Wheel Group */}
       <div
         className="wheel-rotating-wrapper"
         style={{
           transform: `rotate(${rotation}deg)`,
           transition: isSpinning
-            ? `transform ${spinDurationMs}ms cubic-bezier(0.12, 0.82, 0.22, 1)`
+            ? `transform ${spinDurationMs}ms cubic-bezier(0.12, 0.85, 0.22, 1)`
             : 'none'
         }}
       >
@@ -151,85 +159,93 @@ export function ArcadeWheel({
           className="wheel-svg"
         >
           <defs>
-            {/* Glowing outer bezel filter */}
-            <filter id="neon-rim-glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="8" result="blur" />
+            <filter id="neon-glow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="6" result="blur" />
               <feComposite in="SourceGraphic" in2="blur" operator="over" />
             </filter>
-
-            {/* Gradient for wheel outer ring */}
-            <radialGradient id="rim-metal" cx="50%" cy="50%" r="50%">
-              <stop offset="85%" stopColor="#1e293b" />
-              <stop offset="92%" stopColor="#334155" />
-              <stop offset="96%" stopColor="#00f2fe" />
-              <stop offset="100%" stopColor="#0f172a" />
+            <radialGradient id="rim-gradient" cx="50%" cy="50%" r="50%">
+              <stop offset="86%" stopColor="#0f172a" />
+              <stop offset="93%" stopColor="#1e293b" />
+              <stop offset="97%" stopColor="#00f2fe" />
+              <stop offset="100%" stopColor="#070d1e" />
             </radialGradient>
           </defs>
 
-          {/* Outer Bezel */}
+          {/* Outer Bezel Rim */}
           <circle
             cx={radius}
             cy={radius}
             r={outerRimRadius}
-            fill="url(#rim-metal)"
+            fill="url(#rim-gradient)"
             stroke="#00f2fe"
-            strokeWidth="4"
-            filter="url(#neon-rim-glow)"
+            strokeWidth="3.5"
+            filter="url(#neon-glow)"
           />
 
-          {/* Slices */}
+          {/* Wheel Slices */}
           <g>
             {segments.map((seg) => {
-              const pathD = createSlicePath(seg.index, totalSegments, innerTrackRadius);
-              const angleDeg = seg.index * segmentAngle + segmentAngle / 2;
-              const textAngle = angleDeg - 90;
+              const pathD = createSlicePath(seg.index, innerTrackRadius);
+
+              // Position text along the center ray of slice
+              const centerDeg = -90 + seg.index * segmentAngle;
+              const rad = centerDeg * (Math.PI / 180);
               const textRadius = innerTrackRadius * 0.72;
-              const textX = radius + textRadius * Math.cos(textAngle * (Math.PI / 180));
-              const textY = radius + textRadius * Math.sin(textAngle * (Math.PI / 180));
+              const textX = radius + textRadius * Math.cos(rad);
+              const textY = radius + textRadius * Math.sin(rad);
+
+              // Upright legibility calculation:
+              // Natural spoke angle is centerDeg + 90
+              let textRot = centerDeg + 90;
+              const norm = ((textRot % 360) + 360) % 360;
+              // If in the bottom hemisphere, flip by 180 so it's always right-side up!
+              if (norm > 90 && norm < 270) {
+                textRot += 180;
+              }
 
               return (
-                <g key={seg.number} className="wheel-slice-group">
-                  {/* Slice Segment */}
+                <g key={seg.number} className="wheel-slice-item">
+                  {/* Slice Wedge */}
                   <path
                     d={pathD}
                     fill={seg.color}
-                    stroke="#0f172a"
-                    strokeWidth="2.5"
-                    opacity={seg.isClaimed ? '1' : '0.85'}
+                    stroke="#070d1e"
+                    strokeWidth="2"
+                    opacity={seg.isClaimed ? 1 : 0.88}
                   />
 
-                  {/* Claimed Indicator Glow Highlight */}
+                  {/* Golden Claim Glow for active player claims */}
                   {seg.isClaimed && (
                     <path
                       d={pathD}
                       fill="none"
                       stroke="#fef08a"
-                      strokeWidth="3.5"
-                      strokeDasharray="8 4"
-                      opacity="0.9"
+                      strokeWidth="4"
+                      strokeDasharray="6 3"
+                      opacity="0.95"
                     />
                   )}
 
-                  {/* Segment Number Text */}
-                  <g transform={`translate(${textX}, ${textY}) rotate(${angleDeg})`}>
+                  {/* Number Label */}
+                  <g transform={`translate(${textX}, ${textY}) rotate(${textRot})`}>
                     <text
                       textAnchor="middle"
                       dominantBaseline="central"
                       fill="#ffffff"
                       fontWeight="900"
-                      fontSize={totalSegments > 20 ? '20' : '28'}
+                      fontSize={totalSegments > 20 ? '22' : '28'}
                       fontFamily="Orbitron, sans-serif"
                       stroke="#070d1e"
                       strokeWidth="4"
                       paintOrder="stroke fill"
-                      style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))' }}
+                      style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.9))' }}
                     >
                       {seg.number}
                     </text>
                     {seg.isClaimed && (
                       <circle
                         cx="0"
-                        cy="18"
+                        cy="16"
                         r="3.5"
                         fill="#fef08a"
                         stroke="#070d1e"
@@ -242,57 +258,33 @@ export function ArcadeWheel({
             })}
           </g>
 
-          {/* Pegs/Pins along circumference */}
+          {/* Pegs/Pins precisely at boundaries between slices */}
           {Array.from({ length: totalSegments }).map((_, i) => {
-            const pegAngle = (i * segmentAngle - 90) * (Math.PI / 180);
-            const pegX = radius + (innerTrackRadius + 8) * Math.cos(pegAngle);
-            const pegY = radius + (innerTrackRadius + 8) * Math.sin(pegAngle);
+            const pegDeg = -90 + i * segmentAngle - segmentAngle / 2;
+            const pegRad = pegDeg * (Math.PI / 180);
+            const pegX = radius + (innerTrackRadius + 7) * Math.cos(pegRad);
+            const pegY = radius + (innerTrackRadius + 7) * Math.sin(pegRad);
             return (
               <circle
                 key={i}
                 cx={pegX}
                 cy={pegY}
-                r="4.5"
-                fill="#f8fafc"
+                r="4"
+                fill="#ffffff"
                 stroke="#0284c7"
                 strokeWidth="1.5"
-                style={{ filter: 'drop-shadow(0 0 3px #38bdf8)' }}
+                style={{ filter: 'drop-shadow(0 0 4px #38bdf8)' }}
               />
             );
           })}
-
-          {/* Center Hub */}
-          <circle
-            cx={radius}
-            cy={radius}
-            r="54"
-            fill="#090e1a"
-            stroke="#00f2fe"
-            strokeWidth="5"
-            style={{ filter: 'drop-shadow(0 0 12px rgba(0, 242, 254, 0.6))' }}
-          />
-          <circle
-            cx={radius}
-            cy={radius}
-            r="38"
-            fill="#1e1b4b"
-            stroke="#8b5cf6"
-            strokeWidth="3"
-          />
-          <text
-            x={radius}
-            y={radius}
-            textAnchor="middle"
-            dominantBaseline="central"
-            fill="#00f2fe"
-            fontWeight="900"
-            fontSize="14"
-            fontFamily="Orbitron, sans-serif"
-            letterSpacing="1"
-          >
-            CHILLAX
-          </text>
         </svg>
+      </div>
+
+      {/* Stationary Center Hub - Stays level and upright while wheel rotates! */}
+      <div className="wheel-stationary-hub">
+        <div className="hub-inner-glow">
+          <span className="hub-brand-text">CHILLAX</span>
+        </div>
       </div>
 
       {/* Ambient background glow ring */}
