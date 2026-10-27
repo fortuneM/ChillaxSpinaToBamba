@@ -119,7 +119,7 @@ export function ArcadeWheel({
     <div className="arcade-wheel-container">
       {/* Top Fixed Pointer perfectly aligned with 12 o'clock */}
       <div className={`wheel-pointer ${isSpinning ? 'pointer-wiggling' : ''}`}>
-        <svg width="44" height="52" viewBox="0 0 44 52">
+        <svg viewBox="0 0 44 52" className="pointer-svg">
           <defs>
             <filter id="pointer-shadow" x="-30%" y="-30%" width="160%" height="160%">
               <feDropShadow dx="0" dy="3" stdDeviation="5" floodColor="#f59e0b" floodOpacity="0.9" />
@@ -153,8 +153,6 @@ export function ArcadeWheel({
         }}
       >
         <svg
-          width={wheelSize}
-          height={wheelSize}
           viewBox={`0 0 ${wheelSize} ${wheelSize}`}
           className="wheel-svg"
         >
