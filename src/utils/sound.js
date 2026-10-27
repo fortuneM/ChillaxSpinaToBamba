@@ -1,0 +1,181 @@
+// Web Audio API arcade sound synthesizer
+class SoundManager {
+  constructor() {
+    this.ctx = null;
+    this.muted = false;
+    this.activeSpinInterval = null;
+  }
+
+  init() {
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        this.ctx = new AudioCtx();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  toggleMute() {
+    this.muted = !this.muted;
+    return this.muted;
+  }
+
+  setMuted(muted) {
+    this.muted = Boolean(muted);
+  }
+
+  // Crisp mechanical arcade wheel tick
+  playTick(frequency = 750) {
+    if (this.muted) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(frequency, this.ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(120, this.ctx.currentTime + 0.04);
+
+      gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.04);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start();
+      osc.stop(this.ctx.currentTime + 0.04);
+    } catch {
+      // AudioContext policy catch
+    }
+  }
+
+  // UI button click
+  playClick() {
+    if (this.muted) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(520, this.ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, this.ctx.currentTime + 0.05);
+
+      gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.06);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start();
+      osc.stop(this.ctx.currentTime + 0.06);
+    } catch {}
+  }
+
+  // Low warning buzz for errors / conflicts
+  playError() {
+    if (this.muted) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(140, this.ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(90, this.ctx.currentTime + 0.2);
+
+      gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start();
+      osc.stop(this.ctx.currentTime + 0.2);
+    } catch {}
+  }
+
+  // Suspenseful spin ticking sequence matching acceleration and deceleration
+  startSpinSounds(durationMs = 6500) {
+    if (this.muted) return;
+    this.stopSpinSounds();
+    this.init();
+
+    const startTime = Date.now();
+    let currentDelay = 40; // Starts fast (40ms interval)
+
+    const tick = () => {
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= durationMs) {
+        return;
+      }
+
+      const progress = elapsed / durationMs;
+      // Frequency and delay ramp up as wheel slows down
+      if (progress < 0.6) {
+        // High speed cruising
+        currentDelay = 50 + progress * 60;
+      } else {
+        // Dramatic deceleration
+        const decelFactor = (progress - 0.6) / 0.4;
+        currentDelay = 110 + Math.pow(decelFactor, 2.5) * 550;
+      }
+
+      const pitch = 650 + (1 - progress) * 200;
+      this.playTick(pitch);
+
+      this.activeSpinInterval = setTimeout(tick, currentDelay);
+    };
+
+    tick();
+  }
+
+  stopSpinSounds() {
+    if (this.activeSpinInterval) {
+      clearTimeout(this.activeSpinInterval);
+      this.activeSpinInterval = null;
+    }
+  }
+
+  // Triumphant victory fanfare chord arpeggio
+  playFanfare() {
+    if (this.muted) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+
+      const notes = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99, 1046.50]; // C, E, G, C5, E5, G5, C6
+      const noteDelay = 0.09;
+
+      notes.forEach((freq, idx) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        const t = this.ctx.currentTime + idx * noteDelay;
+        const dur = idx === notes.length - 1 ? 0.9 : 0.25;
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, t);
+
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.25, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(t);
+        osc.stop(t + dur);
+      });
+    } catch {}
+  }
+}
+
+export const sounds = new SoundManager();
