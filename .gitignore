@@ -7,6 +7,8 @@ dist/
 # SQLite database files and logs
 data/*.sqlite
 data/*.sqlite-journal
+data/*.db
+data/
 *.log
 
 # Environment & local OS files
@@ -14,3 +16,14 @@ data/*.sqlite-journal
 .env.local
 .DS_Store
 Thumbs.db
+
+# Android build outputs & local config
+.gradle/
+.kotlin/
+android-tv/.gradle/
+android-tv/.kotlin/
+android-tv/build/
+android-tv/app/build/
+android-tv/local.properties
+*.apk
+

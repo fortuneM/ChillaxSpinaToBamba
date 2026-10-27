@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.chillax.spinandwin"
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.chillax.spinandwin"
         minSdk = 21 // Android 5.0+ (supports almost all Android TVs and TV boxes)
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
     }
