@@ -288,6 +288,126 @@ export class GameEngine {
     }
   }
 
+  // Host manually claims a number on behalf of a player without a phone
+  hostClaimNumber(sessionId, { number, nickname }) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) {
+      return { success: false, status: 404, error: 'Session not found.' };
+    }
+
+    const currentRound = db.prepare(`
+      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
+    `).get(sessionId);
+
+    if (!currentRound) {
+      return { success: false, status: 400, error: 'No active round found.' };
+    }
+
+    if (currentRound.status !== 'REGISTRATION_OPEN') {
+      return { success: false, status: 409, error: 'Registration is closed for this round.' };
+    }
+
+    const num = parseInt(number, 10);
+    if (isNaN(num) || num < session.number_min || num > session.number_max) {
+      return { success: false, status: 400, error: `Number must be between ${session.number_min} and ${session.number_max}.` };
+    }
+
+    const rawNickname = String(nickname || '').trim().slice(0, 18).replace(/[<>]/g, '');
+    const cleanNickname = rawNickname || `Player #${num}`;
+
+    try {
+      const existingEntry = db.prepare(`
+        SELECT * FROM entries WHERE round_id = ? AND number = ? AND status = 'ACTIVE'
+      `).get(currentRound.id, num);
+
+      if (existingEntry) {
+        return {
+          success: false,
+          status: 409,
+          error: `Number #${num} is already claimed by ${existingEntry.nickname}!`
+        };
+      }
+
+      const playerToken = 'host_pick_' + num + '_' + crypto.randomBytes(4).toString('hex');
+      const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
+
+      db.prepare(`
+        INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, claimed_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+      `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, new Date().toISOString());
+
+      logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_CLAIMED', {
+        number: num,
+        nickname: cleanNickname,
+        playerToken
+      });
+
+      this.io.to(sessionId).emit('entry:claimed', {
+        number: num,
+        nickname: cleanNickname,
+        playerToken,
+        isHostPick: true
+      });
+      this.broadcastSessionState(sessionId);
+
+      return {
+        success: true,
+        number: num,
+        nickname: cleanNickname,
+        playerToken,
+        isHostPick: true
+      };
+    } catch (err) {
+      if (err.message && err.message.includes('UNIQUE constraint failed')) {
+        return { success: false, status: 409, error: `Number #${num} was just claimed by someone else!` };
+      }
+      return { success: false, status: 500, error: 'Database claim error: ' + err.message };
+    }
+  }
+
+  // Host releases/removes a claimed number while registration is open
+  hostUnclaimNumber(sessionId, number) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) {
+      return { success: false, status: 404, error: 'Session not found.' };
+    }
+
+    const currentRound = db.prepare(`
+      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
+    `).get(sessionId);
+
+    if (!currentRound) {
+      return { success: false, status: 400, error: 'No active round found.' };
+    }
+
+    if (currentRound.status !== 'REGISTRATION_OPEN') {
+      return { success: false, status: 409, error: 'Cannot remove picks after registration is closed.' };
+    }
+
+    const num = parseInt(number, 10);
+    const existingEntry = db.prepare(`
+      SELECT * FROM entries WHERE round_id = ? AND number = ? AND status = 'ACTIVE'
+    `).get(currentRound.id, num);
+
+    if (!existingEntry) {
+      return { success: false, status: 404, error: `Number #${num} is not currently claimed.` };
+    }
+
+    db.prepare('DELETE FROM entries WHERE id = ?').run(existingEntry.id);
+
+    logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_UNCLAIMED', {
+      number: num,
+      previousNickname: existingEntry.nickname
+    });
+
+    this.broadcastSessionState(sessionId);
+    return {
+      success: true,
+      number: num,
+      removedNickname: existingEntry.nickname
+    };
+  }
+
   // Close registration (lock entries)
   closeRegistration(sessionId) {
     const currentRound = db.prepare(`

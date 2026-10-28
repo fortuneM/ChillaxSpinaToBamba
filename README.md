@@ -24,6 +24,7 @@
   - Protected with rate-limited Host PIN (default: `1234`).
   - Configurable number ranges (1–10, 1–20 standard, 1–30) and prize selections.
   - One-touch TV pairing with a short 4-digit code.
+  - **Walk-in / No-Phone Player Picks**: Host can directly tap open numbers on the grid to claim picks on behalf of players without phones (with optional player names) or release numbers before locking.
   - Real-time live number grid monitor showing who claimed each number.
   - **"SPIN NOW!"** button with idempotency protection against double taps.
   - Prize redemption workflow to prevent duplicate claims and record audit trails.

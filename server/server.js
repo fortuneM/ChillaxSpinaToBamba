@@ -134,6 +134,25 @@ app.post('/api/sessions/:id/entries', (req, res) => {
   res.status(201).json(result);
 });
 
+// POST /api/sessions/:id/host-entries: Host claims a number for a player without a phone (Host)
+app.post('/api/sessions/:id/host-entries', requireHostAuth, (req, res) => {
+  const { number, nickname } = req.body;
+  const result = engine.hostClaimNumber(req.params.id, { number, nickname });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.status(201).json(result);
+});
+
+// DELETE /api/sessions/:id/host-entries/:number: Host removes/frees a claimed number (Host)
+app.delete('/api/sessions/:id/host-entries/:number', requireHostAuth, (req, res) => {
+  const result = engine.hostUnclaimNumber(req.params.id, req.params.number);
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
 // POST /api/sessions/:id/close-registration: Lock entries (Host)
 app.post('/api/sessions/:id/close-registration', requireHostAuth, (req, res) => {
   const result = engine.closeRegistration(req.params.id);

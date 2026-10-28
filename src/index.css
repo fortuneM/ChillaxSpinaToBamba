@@ -1080,12 +1080,151 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
 }
 
 .grid-card-header h4 {
   font-size: 0.95rem;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+.host-grid-subtitle {
+  display: block;
+  font-size: 0.8rem;
   color: var(--text-secondary);
-  margin-bottom: 0.85rem;
+}
+
+/* Walk-in / No-Phone Host Pick Bar */
+.host-walkin-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: rgba(7, 13, 30, 0.75);
+  border: 1px solid rgba(0, 242, 254, 0.28);
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.host-walkin-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.walkin-icon {
+  flex-shrink: 0;
+}
+
+.host-walkin-input {
+  flex: 1;
+  background: #070d1e;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  color: #fff;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.9rem;
+  min-width: 0;
+}
+
+.host-walkin-input:focus {
+  outline: none;
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 242, 254, 0.25);
+}
+
+.host-walkin-assign-btn {
+  background: linear-gradient(135deg, #00f2fe 0%, #0284c7 100%);
+  color: #070d1e;
+  font-family: var(--font-arcade);
+  font-size: 0.78rem;
+  font-weight: 800;
+  border: none;
+  border-radius: 8px;
+  padding: 0.58rem 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(0, 242, 254, 0.35);
+}
+
+.host-selected-entry-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.selected-entry-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.selected-num-badge {
+  background: var(--neon-gold);
+  color: #070d1e;
+  font-family: var(--font-arcade);
+  font-weight: 800;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+}
+
+.selected-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.host-free-num-btn {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid #ef4444;
+  color: #fca5a5;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.host-cancel-sel-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.host-pick-feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #34d399;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.host-pick-tag {
+  display: inline-block;
+  margin-left: 0.5rem;
+  background: rgba(139, 92, 246, 0.25);
+  border: 1px solid var(--neon-purple);
+  color: #ddd6fe;
+  font-family: var(--font-arcade);
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  vertical-align: middle;
 }
 
 .host-number-chips-grid {
@@ -1096,13 +1235,35 @@ body {
 
 .host-num-chip {
   background: #070d1e;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   padding: 0.5rem 0.25rem;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
+  color: var(--text-primary);
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.host-num-chip.interactive {
+  cursor: pointer;
+}
+
+.host-num-chip.empty.interactive:hover {
+  border-color: var(--neon-cyan);
+  background: rgba(0, 242, 254, 0.08);
+}
+
+.host-num-chip.empty.interactive:active {
+  transform: scale(0.95);
+}
+
+.host-num-chip.selected {
+  border: 2px solid var(--neon-cyan);
+  background: rgba(0, 242, 254, 0.18);
+  box-shadow: 0 0 12px rgba(0, 242, 254, 0.35);
 }
 
 .host-num-chip.claimed {
@@ -1110,10 +1271,34 @@ body {
   background: rgba(245, 158, 11, 0.15);
 }
 
+.host-num-chip.claimed.host-picked {
+  border-color: var(--neon-purple);
+  background: rgba(139, 92, 246, 0.18);
+}
+
 .host-num-chip.winner {
   border-color: var(--neon-cyan);
   background: rgba(0, 242, 254, 0.25);
   box-shadow: 0 0 10px var(--neon-cyan);
+}
+
+.chip-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  width: 100%;
+}
+
+.chip-host-dot {
+  background: var(--neon-purple);
+  color: #fff;
+  font-family: var(--font-arcade);
+  font-size: 0.55rem;
+  font-weight: 800;
+  padding: 0.05rem 0.28rem;
+  border-radius: 4px;
+  line-height: 1.1;
 }
 
 .chip-num {

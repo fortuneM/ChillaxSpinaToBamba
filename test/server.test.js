@@ -105,7 +105,40 @@ async function runTests() {
 
   const snapshotWithClaims = engine.getSessionSnapshot(session.sessionId);
   assert.strictEqual(snapshotWithClaims.playerCount, 3, 'Should have exactly 3 active players');
-  console.log('  ✅ Atomic claims and conflict handling passed');
+
+  // 4b. Host Manual Picks for Players Without Phones
+  console.log('Test 4b: Host Manual Picks (Walk-in / No-Phone Players)');
+  const hostPick1 = engine.hostClaimNumber(session.sessionId, {
+    number: 15,
+    nickname: 'Lerato'
+  });
+  assert.strictEqual(hostPick1.success, true, 'Host should claim #15 for Lerato');
+  assert.strictEqual(hostPick1.nickname, 'Lerato');
+  assert.strictEqual(hostPick1.isHostPick, true);
+
+  // Host claims a second number for another walk-in player without providing a name (defaults to Player #18)
+  const hostPick2 = engine.hostClaimNumber(session.sessionId, {
+    number: 18,
+    nickname: ''
+  });
+  assert.strictEqual(hostPick2.success, true, 'Host should claim #18 for second walk-in player');
+  assert.strictEqual(hostPick2.nickname, 'Player #18', 'Should default nickname to Player #18');
+
+  // Host tries to claim already-taken number #3
+  const hostPickConflict = engine.hostClaimNumber(session.sessionId, {
+    number: 3,
+    nickname: 'WalkIn'
+  });
+  assert.strictEqual(hostPickConflict.success, false, 'Host should not overwrite already claimed #3');
+  assert.strictEqual(hostPickConflict.status, 409);
+
+  // Host frees #18 before locking registration
+  const hostUnclaim = engine.hostUnclaimNumber(session.sessionId, 18);
+  assert.strictEqual(hostUnclaim.success, true, 'Host should be able to free #18');
+
+  const snapshotAfterHostPicks = engine.getSessionSnapshot(session.sessionId);
+  assert.strictEqual(snapshotAfterHostPicks.playerCount, 4, 'Should have 4 active players (3 phone + 1 host pick)');
+  console.log('  ✅ Atomic claims, host manual picks, and conflict handling passed');
 
   // 5. Close Registration
   console.log('Test 5: Close Registration');
@@ -114,7 +147,7 @@ async function runTests() {
 
   // Further claims should be rejected
   const lateClaim = engine.claimNumber(session.sessionId, {
-    number: 15,
+    number: 19,
     playerToken: 'token_player_4',
     nickname: 'Latecomer'
   });
@@ -127,7 +160,7 @@ async function runTests() {
   engine.setWinnerMode(session.sessionId, 'GUARANTEED');
   const spinRes = engine.spin(session.sessionId, { idempotencyKey: 'idemp_key_101' });
   assert.strictEqual(spinRes.success, true, 'Spin should succeed');
-  assert([3, 7, 12].includes(spinRes.winningNumber), 'In guaranteed mode, winning number must be among claimed numbers');
+  assert([3, 7, 12, 15].includes(spinRes.winningNumber), 'In guaranteed mode, winning number must be among claimed numbers');
 
   // Duplicate spin request with same idempotency key
   const dupSpin = engine.spin(session.sessionId, { idempotencyKey: 'idemp_key_101' });

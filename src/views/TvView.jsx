@@ -335,7 +335,7 @@ export function TvView() {
           <div className="tv-wheel-caption">
             {status === 'REGISTRATION_OPEN' && (
               <p className="caption-text">
-                Pick an available number on your phone. <span className="highlight-gold">Golden glow</span> marks claimed numbers.
+                Pick a number on your phone or ask the Host! <span className="highlight-gold">Golden glow</span> marks claimed numbers.
               </p>
             )}
             {status === 'REGISTRATION_CLOSED' && (
@@ -386,7 +386,9 @@ export function TvView() {
               )}
 
               <div className="result-footer-instructions">
-                Please present your winning phone screen to the Chillax front desk to redeem!
+                {session.entries?.find(e => e.number === currentRound.winningNumber)?.player_token?.startsWith('host_pick_')
+                  ? 'Host-registered pick! Claim your prize directly with the Chillax Host at the front desk!'
+                  : 'Present your winning phone screen or verify with the Chillax front desk to redeem!'}
               </div>
             </div>
           ) : (

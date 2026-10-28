@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getSocket } from '../utils/socket';
 import { 
   Play, Lock, Unlock, RotateCcw, Award, CheckCircle2, 
-  XCircle, Tv, AlertCircle, History, Shield, Users, RefreshCw
+  XCircle, Tv, AlertCircle, History, Shield, Users, RefreshCw,
+  UserPlus, Trash2, Check
 } from 'lucide-react';
 
 export function HostView() {
@@ -19,6 +20,11 @@ export function HostView() {
   const [historyData, setHistoryData] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
   const [redeemNotes, setRedeemNotes] = useState('');
+  const [walkInName, setWalkInName] = useState('');
+  const [selectedPickNum, setSelectedPickNum] = useState(null);
+  const [hostPickFeedback, setHostPickFeedback] = useState('');
+  const [isAssigningPick, setIsAssigningPick] = useState(false);
+  const walkInInputRef = useRef(null);
 
   // Check stored PIN on load
   useEffect(() => {
@@ -165,11 +171,66 @@ export function HostView() {
 
   // Next round
   const handleNextRound = async () => {
+    setSelectedPickNum(null);
+    setWalkInName('');
+    setHostPickFeedback('');
     await apiRequest(`/api/sessions/${session.sessionId}/rounds`, 'POST', {
       prizeId: selectedPrizeId,
       numberMin: parseInt(numberMin, 10),
       numberMax: parseInt(numberMax, 10)
     });
+  };
+
+  // Host manually claims a number for a player without a phone
+  const handleHostClaimNumber = async (num, customName = walkInName) => {
+    if (!session?.sessionId || isAssigningPick) return;
+    setIsAssigningPick(true);
+    setHostPickFeedback('');
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/host-entries`, 'POST', {
+      number: num,
+      nickname: customName ? customName.trim() : ''
+    });
+    setIsAssigningPick(false);
+    if (data?.success) {
+      setHostPickFeedback(`Assigned #${data.number} to ${data.nickname}`);
+      setWalkInName('');
+      setSelectedPickNum(null);
+    }
+  };
+
+  // Host releases/removes a claimed number while registration is open
+  const handleHostUnclaimNumber = async (num) => {
+    if (!session?.sessionId || isAssigningPick) return;
+    setIsAssigningPick(true);
+    setHostPickFeedback('');
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/host-entries/${num}`, 'DELETE');
+    setIsAssigningPick(false);
+    if (data?.success) {
+      setHostPickFeedback(`Freed #${data.number} (${data.removedNickname || 'Player'})`);
+      setSelectedPickNum(null);
+    }
+  };
+
+  // Handle tapping a number chip in the Host grid
+  const handleChipClick = (num, existingEntry) => {
+    if (session?.status !== 'REGISTRATION_OPEN' || isAssigningPick) return;
+
+    if (existingEntry) {
+      setSelectedPickNum(selectedPickNum === num ? null : num);
+      setHostPickFeedback('');
+      return;
+    }
+
+    // If host already typed a player name or tapped the already-selected number again, assign immediately
+    if (walkInName.trim() || selectedPickNum === num) {
+      handleHostClaimNumber(num, walkInName);
+    } else {
+      setSelectedPickNum(num);
+      setHostPickFeedback('');
+      setTimeout(() => {
+        walkInInputRef.current?.focus();
+      }, 20);
+    }
   };
 
   // Cancel round
@@ -420,13 +481,22 @@ export function HostView() {
           <div className="host-result-actions-card">
             {currentRound?.hasWinner || session.entries?.some(e => e.number === currentRound?.winningNumber) ? (
               <>
-                <div className="result-announcement">
-                  <span className="result-num-pill">#{currentRound.winningNumber}</span>
-                  <div className="result-details">
-                    <strong>WINNER: {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname || 'Player'}</strong>
-                    <span>Prize: {prize?.name}</span>
-                  </div>
-                </div>
+                {(() => {
+                  const winningEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
+                  const isHostEntry = winningEntry?.player_token?.startsWith('host_pick_');
+                  return (
+                    <div className="result-announcement">
+                      <span className="result-num-pill">#{currentRound.winningNumber}</span>
+                      <div className="result-details">
+                        <strong>
+                          WINNER: {winningEntry?.nickname || 'Player'}
+                          {isHostEntry && <span className="host-pick-tag ml-2">HOST PICK</span>}
+                        </strong>
+                        <span>Prize: {prize?.name}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Prize Redemption Button (Page 10) */}
                 <div className="host-redemption-box">
@@ -476,6 +546,129 @@ export function HostView() {
         )}
       </div>
 
+      {/* Number Claims Grid & Walk-in Host Pick Controls */}
+      <div className="host-claimed-grid-card">
+        <div className="grid-card-header">
+          <h4>Wheel Numbers & Player Picks ({session.playerCount}/{session.numberRange.max} Claimed)</h4>
+          {status === 'REGISTRATION_OPEN' && (
+            <span className="host-grid-subtitle">
+              No phone? Enter a player&apos;s name below and tap an open number to claim it for them.
+            </span>
+          )}
+        </div>
+
+        {status === 'REGISTRATION_OPEN' && (
+          <div className="host-walkin-box">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum)) {
+                  handleHostClaimNumber(selectedPickNum, walkInName);
+                }
+              }}
+              className="host-walkin-form"
+            >
+              <div className="host-walkin-input-row">
+                <UserPlus size={18} className="walkin-icon text-cyan" />
+                <input
+                  ref={walkInInputRef}
+                  type="text"
+                  maxLength={18}
+                  value={walkInName}
+                  onChange={(e) => setWalkInName(e.target.value)}
+                  placeholder={
+                    selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum)
+                      ? `Name for #${selectedPickNum} (default: Player #${selectedPickNum})`
+                      : 'Walk-in player name (optional, e.g. Thabo)'
+                  }
+                  className="host-walkin-input"
+                />
+                {selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum) && (
+                  <button
+                    type="submit"
+                    disabled={isAssigningPick}
+                    className="host-walkin-assign-btn"
+                  >
+                    Assign #{selectedPickNum}
+                  </button>
+                )}
+              </div>
+            </form>
+
+            {/* Selected Claimed Number Management Bar */}
+            {selectedPickNum && session.entries?.some(en => en.number === selectedPickNum) && (() => {
+              const selEntry = session.entries.find(en => en.number === selectedPickNum);
+              const isHostEntry = selEntry?.player_token?.startsWith('host_pick_');
+              return (
+                <div className="host-selected-entry-bar">
+                  <div className="selected-entry-info">
+                    <span className="selected-num-badge">#{selectedPickNum}</span>
+                    <span>
+                      Claimed by <strong>{selEntry.nickname}</strong>{' '}
+                      <span className="text-muted text-xs">
+                        ({isHostEntry ? 'Host Pick' : 'Phone'})
+                      </span>
+                    </span>
+                  </div>
+                  <div className="selected-entry-actions">
+                    <button
+                      type="button"
+                      disabled={isAssigningPick}
+                      onClick={() => handleHostUnclaimNumber(selectedPickNum)}
+                      className="host-free-num-btn"
+                    >
+                      <Trash2 size={14} className="inline-icon" /> Free #{selectedPickNum}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPickNum(null)}
+                      className="host-cancel-sel-btn"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {hostPickFeedback && (
+              <div className="host-pick-feedback">
+                <Check size={15} /> <span>{hostPickFeedback}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="host-number-chips-grid">
+          {Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => {
+            const num = session.numberRange.min + i;
+            const entry = session.entries?.find(e => e.number === num);
+            const isWinner = isResult && currentRound?.winningNumber === num;
+            const isSelected = selectedPickNum === num;
+            const isHostPick = entry?.player_token?.startsWith('host_pick_');
+            const isInteractive = status === 'REGISTRATION_OPEN';
+
+            return (
+              <button
+                key={num}
+                type="button"
+                disabled={!isInteractive || isAssigningPick}
+                onClick={() => handleChipClick(num, entry)}
+                className={`host-num-chip ${entry ? 'claimed' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive ? 'interactive' : ''}`}
+              >
+                <div className="chip-top-row">
+                  <span className="chip-num">{num}</span>
+                  {isHostPick && <span className="chip-host-dot" title="Entered by Host">H</span>}
+                </div>
+                <span className="chip-player" title={entry ? entry.nickname : 'Tap to claim'}>
+                  {entry ? entry.nickname : (isInteractive ? '+ Pick' : '—')}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Difficulty Mode Control */}
       <div className="host-setup-card">
         <div className="flex justify-between items-center mb-1">
@@ -507,32 +700,6 @@ export function HostView() {
         <p className="text-xs text-muted mt-1">
           In <strong>Hard Mode</strong>, the wheel spins across all numbers (1–{session.numberRange.max}). If it lands on an unclaimed number, there is NO WINNER.
         </p>
-      </div>
-
-      {/* Number Claims Grid Monitor */}
-      <div className="host-claimed-grid-card">
-        <div className="grid-card-header">
-          <h4>Wheel Numbers Monitor ({session.playerCount}/{session.numberRange.max} Claimed)</h4>
-        </div>
-        <div className="host-number-chips-grid">
-          {Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => {
-            const num = session.numberRange.min + i;
-            const entry = session.entries?.find(e => e.number === num);
-            const isWinner = isResult && currentRound?.winningNumber === num;
-
-            return (
-              <div
-                key={num}
-                className={`host-num-chip ${entry ? 'claimed' : 'empty'} ${isWinner ? 'winner' : ''}`}
-              >
-                <span className="chip-num">{num}</span>
-                <span className="chip-player" title={entry ? entry.nickname : 'Available'}>
-                  {entry ? entry.nickname : '—'}
-                </span>
-              </div>
-            );
-          })}
-        </div>
       </div>
 
       {/* History Modal */}
