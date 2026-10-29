@@ -986,6 +986,81 @@ body {
   box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
 }
 
+/* Smart Profit-Guard Engine Telemetry Pod */
+.host-profit-engine-card {
+  background: linear-gradient(135deg, rgba(6, 78, 59, 0.35) 0%, rgba(15, 23, 42, 0.85) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  border-radius: 12px;
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.profit-engine-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.profit-engine-title {
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #34d399;
+  letter-spacing: 0.5px;
+}
+
+.profit-3x-status {
+  font-family: var(--font-arcade);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 12px;
+}
+
+.profit-3x-status.locked {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+
+.profit-3x-status.unlocked {
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid #10b981;
+  color: #6ee7b7;
+}
+
+.profit-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.45rem;
+}
+
+.profit-metric-box {
+  background: rgba(7, 13, 30, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.metric-val {
+  font-family: var(--font-arcade);
+  font-size: 0.85rem;
+  font-weight: 800;
+  margin-top: 0.1rem;
+}
+
 .host-pool-badge {
   background: rgba(16, 185, 129, 0.18);
   border: 1px solid #10b981;
@@ -1700,6 +1775,34 @@ body {
 .bet-payout-preview {
   font-family: var(--font-arcade);
   font-size: 0.85rem;
+  color: #fef08a;
+}
+
+.bet-multiplier-tiers {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+}
+
+.mult-tier-pill {
+  background: rgba(7, 13, 30, 0.8);
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  border-radius: 8px;
+  padding: 0.3rem 0.4rem;
+  text-align: center;
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #38bdf8;
+}
+
+.mult-tier-pill.tier-2x {
+  border-color: rgba(139, 92, 246, 0.45);
+  color: #c4b5fd;
+}
+
+.mult-tier-pill.tier-3x {
+  border-color: rgba(245, 158, 11, 0.55);
   color: #fef08a;
 }
 

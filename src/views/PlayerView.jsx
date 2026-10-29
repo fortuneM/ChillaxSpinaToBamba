@@ -129,7 +129,7 @@ export function PlayerView() {
       } else {
         sounds.playClick();
         if (isCashRound) {
-          setClaimSuccessMsg(`You claimed #${num} with a R${data.betAmount} bet — Win R${data.payoutAmount} Cash!`);
+          setClaimSuccessMsg(`You claimed #${num} with a R${data.betAmount} bet — Win R${Math.round(data.betAmount * 1.5 * 100) / 100} to R${Math.round(data.betAmount * 3 * 100) / 100} Cash!`);
         } else {
           setClaimSuccessMsg(`You claimed Number #${num}! Good luck!`);
         }
@@ -257,7 +257,9 @@ export function PlayerView() {
           <div className="my-pick-badge">
             MY PICK: <strong>#{myClaimedNumber}</strong>
             {isCashRound && myEntry?.bet_amount >= 5 && (
-              <span> • R{myEntry.bet_amount} (Win R{myEntry.payout_amount})</span>
+              <span>
+                {' '}• R{myEntry.bet_amount} (Win R{Math.round(myEntry.bet_amount * 1.5 * 100) / 100}–R{Math.round(myEntry.bet_amount * 3 * 100) / 100})
+              </span>
             )}
           </div>
         )}
@@ -302,14 +304,19 @@ export function PlayerView() {
         </div>
       )}
 
-      {/* Cash Bet Amount Selector (Only for 3x Cash Multiplier Rounds) */}
+      {/* Cash Bet Amount Selector (For 1.5x / 2x / 3x Cash Multiplier Rounds) */}
       {isCashRound && (
         <div className="player-bet-card">
           <div className="player-bet-header">
             <span className="bet-title">💰 Enter Your Bet (Min R5)</span>
             <span className="bet-payout-preview">
-              Win 3x: <strong>R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</strong>
+              Win: <strong>R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 1.5 * 100) / 100 : 0} – R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</strong>
             </span>
+          </div>
+          <div className="bet-multiplier-tiers">
+            <span className="mult-tier-pill">1.5x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 1.5 * 100) / 100 : 0}</span>
+            <span className="mult-tier-pill tier-2x">2x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 2 * 100) / 100 : 0}</span>
+            <span className="mult-tier-pill tier-3x">3x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</span>
           </div>
           <div className="bet-presets-row">
             {[5, 10, 20, 50, 100].map((amt) => (
@@ -373,7 +380,11 @@ export function PlayerView() {
             Your number <strong>#{myClaimedNumber}</strong> was selected!
           </p>
           <div className="winner-prize-display" style={{ borderColor: prize?.color || '#00f2fe' }}>
-            <span className="won-prize-label">{isCashRound ? '3X CASH PAYOUT WON' : 'PRIZE WON'}</span>
+            <span className="won-prize-label">
+              {isCashRound
+                ? `🔥 ${currentRound?.appliedMultiplier || 1.5}X CASH MULTIPLIER WON!`
+                : 'PRIZE WON'}
+            </span>
             <span className="won-prize-name">
               {isCashRound && myEntry?.payout_amount
                 ? `R${myEntry.payout_amount} CASH`
@@ -381,7 +392,7 @@ export function PlayerView() {
             </span>
             <span className="won-prize-desc">
               {isCashRound && myEntry?.bet_amount
-                ? `3x your R${myEntry.bet_amount} bet!`
+                ? `${currentRound?.appliedMultiplier || 1.5}x your R${myEntry.bet_amount} bet!`
                 : prize?.description}
             </span>
           </div>

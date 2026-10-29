@@ -206,7 +206,7 @@ export function HostView() {
     if (data?.success) {
       setHostPickFeedback(
         isCashRound
-          ? `Assigned #${data.number} to ${data.nickname} (Bet R${data.betAmount} → Win R${data.payoutAmount})`
+          ? `Assigned #${data.number} to ${data.nickname} (Bet R${data.betAmount} → Win R${Math.round(data.betAmount * 1.5 * 100) / 100}–R${Math.round(data.betAmount * 3 * 100) / 100})`
           : `Assigned #${data.number} to ${data.nickname}`
       );
       setWalkInName('');
@@ -446,13 +446,13 @@ export function HostView() {
         </div>
       </div>
 
-      {/* Active Prize Card & Cash 3x Mode Switcher */}
+      {/* Active Prize Card & Cash Multiplier Mode Switcher */}
       {prize && (
         <div className="host-active-prize-card">
           <div className="prize-indicator" style={{ background: prize.color || '#00f2fe' }} />
           <div className="prize-info">
             <div className="prize-label">
-              {isCashRound ? '💰 REAL CASH MODE (3X BET • MIN R5)' : 'CURRENT ROUND PRIZE'}
+              {isCashRound ? '💰 SMART CASH MODE (1.5X • 2X • 3X | MIN R5)' : 'CURRENT ROUND PRIZE'}
             </div>
             {status === 'REGISTRATION_OPEN' ? (
               <select
@@ -482,12 +482,44 @@ export function HostView() {
                 }
               }}
               className={`host-cash-mode-btn ${isCashRound ? 'active' : ''}`}
-              title="Toggle 3x Cash Multiplier Mode"
+              title="Toggle Smart Cash Multiplier Mode (1.5x / 2x / 3x)"
             >
-              {isCashRound ? '💰 3x Cash ON' : '💰 Use 3x Cash'}
+              {isCashRound ? '💰 Cash Mode ON' : '💰 Use Cash Mode'}
             </button>
           )}
           <Award size={24} style={{ color: prize.color || '#00f2fe' }} />
+        </div>
+      )}
+
+      {/* House Profit Protection & Multiplier Telemetry Pod (Cash Mode) */}
+      {isCashRound && session.houseCashStats && (
+        <div className="host-profit-engine-card">
+          <div className="profit-engine-header">
+            <span className="profit-engine-title">🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x)</span>
+            <span className={`profit-3x-status ${session.houseCashStats.is3xReady ? 'unlocked' : 'locked'}`}>
+              {session.houseCashStats.is3xReady ? '🔓 3x Jackpot Unlocked' : '🔒 3x Gated (1.5x / 2x Active)'}
+            </span>
+          </div>
+          <div className="profit-metrics-grid">
+            <div className="profit-metric-box">
+              <span className="metric-label">Collected</span>
+              <span className="metric-val">R{session.houseCashStats.historicalCollected + (session.totalBets || 0)}</span>
+            </div>
+            <div className="profit-metric-box">
+              <span className="metric-label">Paid Out</span>
+              <span className="metric-val">R{session.houseCashStats.historicalPaidOut}</span>
+            </div>
+            <div className="profit-metric-box">
+              <span className="metric-label">Net Profit</span>
+              <span className="metric-val text-green">
+                R{Math.round((session.houseCashStats.netProfit + (session.totalBets || 0)) * 100) / 100}
+              </span>
+            </div>
+            <div className="profit-metric-box">
+              <span className="metric-label">Surplus Reserve</span>
+              <span className="metric-val text-gold">R{session.houseCashStats.surplusReserve}</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -556,7 +588,7 @@ export function HostView() {
                         </strong>
                         {isCashRound && winPayout > 0 ? (
                           <span className="text-green font-bold">
-                            💰 PAYOUT: R{winPayout} CASH (3x R{winBet} bet)
+                            💰 PAYOUT: R{winPayout} CASH ({currentRound?.appliedMultiplier || 1.5}x on R{winBet} bet)
                           </span>
                         ) : (
                           <span>Prize: {prize?.name}</span>
@@ -672,7 +704,7 @@ export function HostView() {
                     />
                   </div>
                   <span className="walkin-payout-tag">
-                    Win R{Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 3 * 100) / 100 : 0}
+                    1.5x–3x: R{Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 1.5 * 100) / 100 : 0}–R{Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 3 * 100) / 100 : 0}
                   </span>
                 </div>
               )}
@@ -855,7 +887,7 @@ export function HostView() {
                         <td>{r.winner_nickname || '—'}</td>
                         <td>
                           {r.prize_type === 'cash_multiplier' && r.winner_payout_amount > 0
-                            ? `R${r.winner_payout_amount} Cash (3x R${r.winner_bet_amount})`
+                            ? `R${r.winner_payout_amount} Cash (${r.applied_multiplier || 1.5}x R${r.winner_bet_amount})`
                             : (r.prize_name || 'Standard')}
                         </td>
                         <td>

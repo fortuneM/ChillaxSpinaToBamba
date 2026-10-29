@@ -129,14 +129,14 @@ class SoundManager {
     } catch {}
   }
 
-  // Suspenseful spin ticking sequence matching acceleration and deceleration
-  startSpinSounds(durationMs = 6500) {
+  // Suspenseful spin ticking sequence matching fast acceleration and deceleration
+  startSpinSounds(durationMs = 5000) {
     if (this.muted) return;
     this.stopSpinSounds();
     this.init();
 
     const startTime = Date.now();
-    let currentDelay = 40;
+    let currentDelay = 25;
 
     const tick = () => {
       const elapsed = Date.now() - startTime;
@@ -145,14 +145,14 @@ class SoundManager {
       }
 
       const progress = elapsed / durationMs;
-      if (progress < 0.6) {
-        currentDelay = 50 + progress * 60;
+      if (progress < 0.65) {
+        currentDelay = 28 + progress * 45;
       } else {
-        const decelFactor = (progress - 0.6) / 0.4;
-        currentDelay = 110 + Math.pow(decelFactor, 2.5) * 550;
+        const decelFactor = (progress - 0.65) / 0.35;
+        currentDelay = 75 + Math.pow(decelFactor, 2.4) * 380;
       }
 
-      const pitch = 650 + (1 - progress) * 200;
+      const pitch = 700 + (1 - progress) * 240;
       this.playTick(pitch);
 
       this.activeSpinInterval = setTimeout(tick, currentDelay);

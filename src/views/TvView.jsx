@@ -310,13 +310,13 @@ export function TvView() {
           {prize && (
             <div className="tv-prize-spotlight" style={{ borderColor: prize.color || '#00f2fe' }}>
               <div className="prize-spotlight-label">
-                {isCashRound ? '💰 3X CASH PAYOUT MODE' : 'ROUND PRIZE'}
+                {isCashRound ? '💰 MYSTERY CASH MULTIPLIER (1.5X • 2X • 3X)' : 'ROUND PRIZE'}
               </div>
               <div className="prize-spotlight-name" style={{ color: prize.color || '#00f2fe' }}>
                 {prize.name}
               </div>
               <div className="prize-spotlight-desc">
-                {isCashRound ? 'Bet from R5 • Winner gets 3x their bet!' : prize.description}
+                {isCashRound ? 'Bet from R5 • Spin rolls 1.5x, 2x, or 3x Cash!' : prize.description}
               </div>
             </div>
           )}
@@ -330,7 +330,7 @@ export function TvView() {
             claimedNumbers={session.claimedNumbers || []}
             winningNumber={currentRound?.winningNumber}
             isSpinning={isSpinning || status === 'SPINNING'}
-            spinDurationMs={6500}
+            spinDurationMs={5000}
             onSpinComplete={() => {
               setIsSpinning(false);
             }}
@@ -384,17 +384,18 @@ export function TvView() {
                 const winEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
                 const winBet = Number(winEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
                 const winPayout = Number(winEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
+                const winMult = Number(currentRound?.appliedMultiplier || 1.5);
                 return (
                   <div className="result-prize-box">
                     <span className="result-won-label">
-                      {isCashRound ? 'WINS 3X CASH PAYOUT:' : 'WINS PRIZE:'}
+                      {isCashRound ? `🔥 ${winMult}X CASH MULTIPLIER HIT!` : 'WINS PRIZE:'}
                     </span>
                     <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
                       {isCashRound && winPayout > 0 ? `R${winPayout} CASH!` : prize.name}
                     </span>
                     <span className="result-prize-val">
                       {isCashRound && winBet > 0
-                        ? `3x their R${winBet} bet!`
+                        ? `${winMult}x their R${winBet} bet!`
                         : prize.description}
                     </span>
                   </div>

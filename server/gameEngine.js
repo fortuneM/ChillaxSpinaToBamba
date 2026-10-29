@@ -57,6 +57,212 @@ export class GameEngine {
     return { success: true };
   }
 
+  // Compute real-time house treasury & profit reserve telemetry for dynamic multiplier gating
+  getHouseCashStats(sessionId, excludeRoundId = null) {
+    const resolvedRounds = db.prepare(`
+      SELECT id, winning_entry_id, applied_multiplier
+      FROM rounds
+      WHERE session_id = ? AND status IN ('SPINNING', 'RESULT')
+      ORDER BY round_number DESC
+    `).all(sessionId);
+
+    let historicalCollected = 0;
+    let historicalPaidOut = 0;
+    let consecutiveNoWinners = 0;
+    let streakCounting = true;
+
+    for (const r of resolvedRounds) {
+      if (excludeRoundId && r.id === excludeRoundId) continue;
+
+      const roundBets = db.prepare(`
+        SELECT COALESCE(SUM(bet_amount), 0) as total
+        FROM entries
+        WHERE round_id = ? AND status = 'ACTIVE'
+      `).get(r.id);
+      historicalCollected += Number(roundBets?.total || 0);
+
+      if (r.winning_entry_id) {
+        streakCounting = false;
+        const winRow = db.prepare('SELECT payout_amount FROM entries WHERE id = ?').get(r.winning_entry_id);
+        historicalPaidOut += Number(winRow?.payout_amount || 0);
+      } else if (streakCounting) {
+        consecutiveNoWinners += 1;
+      }
+    }
+
+    const targetProfitRatio = 0.25; // House retains at least 25% of gross wagers as protected profit
+    const netProfit = Math.round((historicalCollected - historicalPaidOut) * 100) / 100;
+    const protectedProfitFloor = Math.round((historicalCollected * targetProfitRatio) * 100) / 100;
+    const surplusReserve = Math.max(0, Math.round((netProfit - protectedProfitFloor) * 100) / 100);
+    const profitMarginPct = historicalCollected > 0
+      ? Math.round((netProfit / historicalCollected) * 100)
+      : 100;
+
+    return {
+      historicalCollected: Math.round(historicalCollected * 100) / 100,
+      historicalPaidOut: Math.round(historicalPaidOut * 100) / 100,
+      netProfit,
+      protectedProfitFloor,
+      surplusReserve,
+      profitMarginPct,
+      consecutiveNoWinners,
+      is3xReady: surplusReserve >= 15
+    };
+  }
+
+  // Sophisticated profit-protected winner & multiplier (1.5x, 2x, 3x) selection engine
+  selectSmartCashOutcome({ session, currentRound, entries, winnerMode }) {
+    const roundPool = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
+    const stats = this.getHouseCashStats(session.id, currentRound.id);
+    const totalInflow = stats.historicalCollected + roundPool;
+    const targetProfitRatio = 0.25;
+    const profitFloor = totalInflow * targetProfitRatio;
+
+    // Maximum payout that still leaves the business at or above its 25% profit floor
+    const maxSafePayout = Math.max(0, (totalInflow - stats.historicalPaidOut) - profitFloor);
+    // Maximum payout that keeps cumulative house net profit >= R0 (never in the red)
+    const maxBreakEvenPayout = Math.max(0, totalInflow - stats.historicalPaidOut);
+
+    // Entries where paying 1.5x keeps the business above its 25% target profit floor
+    const safeEntries = entries.filter(e => (Number(e.bet_amount) * 1.5) <= maxSafePayout);
+    // Entries where paying 1.5x at least keeps cumulative profit >= R0
+    const breakEvenEntries = entries.filter(e => (Number(e.bet_amount) * 1.5) <= maxBreakEvenPayout);
+
+    // Helper: pick an entry weighted inversely by sqrt(bet) so smaller/safer bets win more frequently
+    const pickWeightedEntry = (pool) => {
+      if (pool.length === 1) return pool[0];
+      const weights = pool.map(e => Math.max(1, Math.round(100 / Math.sqrt(Math.max(5, Number(e.bet_amount))))));
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      let roll = crypto.randomInt(0, totalWeight);
+      for (let i = 0; i < pool.length; i++) {
+        if (roll < weights[i]) return pool[i];
+        roll -= weights[i];
+      }
+      return pool[0];
+    };
+
+    let winningNumber;
+    let winningEntry = null;
+
+    if (winnerMode === 'GUARANTEED' && entries.length > 0) {
+      // Party / Guaranteed Winner mode: prioritize safe/break-even entries to protect house profit
+      if (safeEntries.length > 0) {
+        winningEntry = pickWeightedEntry(safeEntries);
+      } else if (breakEvenEntries.length > 0) {
+        winningEntry = pickWeightedEntry(breakEvenEntries);
+      } else {
+        // Fallback if host forced guaranteed mode on a single unbuffered bet: pick lowest bet
+        const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
+        winningEntry = sortedByBet[0];
+      }
+      winningNumber = winningEntry.number;
+    } else {
+      // TRUE_ODDS with Profit Protection & Player Attraction ("Hot-Drop") logic
+      const allWheelNums = [];
+      for (let n = session.number_min; n <= session.number_max; n++) {
+        allWheelNums.push(n);
+      }
+      const claimedSet = new Set(entries.map(e => e.number));
+      const unclaimedNums = allWheelNums.filter(n => !claimedSet.has(n));
+
+      // Player Magnet: if 2+ consecutive no-winner rounds or rich surplus, boost chance of an affordable win
+      const shouldBoostAttraction = safeEntries.length > 0 && (
+        stats.consecutiveNoWinners >= 2 ||
+        (stats.surplusReserve >= 25 && crypto.randomInt(0, 100) < 40)
+      );
+
+      if (shouldBoostAttraction) {
+        winningEntry = pickWeightedEntry(safeEntries);
+        winningNumber = winningEntry.number;
+      } else {
+        // Standard wheel roll with profit-guard interception
+        const rawNumber = crypto.randomInt(session.number_min, session.number_max + 1);
+        const rawEntry = entries.find(e => e.number === rawNumber) || null;
+
+        if (!rawEntry) {
+          winningNumber = rawNumber;
+          winningEntry = null;
+        } else {
+          const isSafe = (Number(rawEntry.bet_amount) * 1.5) <= maxSafePayout;
+          if (isSafe) {
+            winningNumber = rawNumber;
+            winningEntry = rawEntry;
+          } else if (safeEntries.length > 0 && crypto.randomInt(0, 100) < 55) {
+            // Redirect from an unaffordable whale bet to an affordable player bet so someone still wins!
+            winningEntry = pickWeightedEntry(safeEntries);
+            winningNumber = winningEntry.number;
+          } else if (unclaimedNums.length > 0) {
+            // Protect house treasury by landing on an unclaimed segment until pool builds up
+            winningNumber = unclaimedNums[crypto.randomInt(0, unclaimedNums.length)];
+            winningEntry = null;
+          } else {
+            // Every number on the wheel was claimed: pick the lowest-bet entry
+            const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
+            winningEntry = sortedByBet[0];
+            winningNumber = winningEntry.number;
+          }
+        }
+      }
+    }
+
+    // Now select the dynamic multiplier from [1.5, 2, 3], heavily favoring 1.5x and 2x
+    let appliedMultiplier = 0;
+    if (winningEntry) {
+      const bet = Math.max(5, Number(winningEntry.bet_amount) || 5);
+      const cost2x = bet * 2;
+      const cost3x = bet * 3;
+
+      // 2x is only eligible if paying 2x stays within maxSafePayout
+      const canAfford2x = cost2x <= maxSafePayout;
+      // 3x is strictly gated: only eligible when paying 3x stays within maxSafePayout AND leaves a healthy surplus cushion
+      const canAfford3x = (cost3x <= maxSafePayout) && ((maxSafePayout - cost3x) >= Math.max(10, bet * 0.5));
+
+      let weight1_5 = 100;
+      let weight2_0 = 0;
+      let weight3_0 = 0;
+
+      if (canAfford3x) {
+        const surplusRatio = maxSafePayout / cost3x;
+        if (surplusRatio >= 2.5) {
+          // High house profit reserve: unlock a 15% shot at 3x while keeping 1.5x and 2x dominant (85%)
+          weight1_5 = 57;
+          weight2_0 = 28;
+          weight3_0 = 15;
+        } else {
+          // Moderate surplus reserve: conservative 8% shot at 3x, 92% on 1.5x / 2x
+          weight1_5 = 65;
+          weight2_0 = 27;
+          weight3_0 = 8;
+        }
+      } else if (canAfford2x) {
+        // 3x locked to protect profit; distribute across lower two multipliers (72% 1.5x, 28% 2x)
+        weight1_5 = 72;
+        weight2_0 = 28;
+        weight3_0 = 0;
+      } else {
+        // Tight margin: clamp to 1.5x to protect business profit
+        weight1_5 = 100;
+        weight2_0 = 0;
+        weight3_0 = 0;
+      }
+
+      const multRoll = crypto.randomInt(0, weight1_5 + weight2_0 + weight3_0);
+      if (multRoll < weight1_5) {
+        appliedMultiplier = 1.5;
+      } else if (multRoll < weight1_5 + weight2_0) {
+        appliedMultiplier = 2;
+      } else {
+        appliedMultiplier = 3;
+      }
+    }
+
+    return {
+      winningNumber,
+      winningEntry,
+      appliedMultiplier
+    };
+  }
+
   // Helper to retrieve full authoritative session snapshot
   getSessionSnapshot(sessionId) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
@@ -94,6 +300,7 @@ export class GameEngine {
     const claimedNumbers = entries.map(e => e.number);
     const totalBets = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
     const isCashRound = prize?.prize_type === 'cash_multiplier';
+    const houseCashStats = this.getHouseCashStats(sessionId);
 
     const winningEntry = currentRound && currentRound.winning_entry_id
       ? db.prepare('SELECT * FROM entries WHERE id = ?').get(currentRound.winning_entry_id)
@@ -110,6 +317,7 @@ export class GameEngine {
       winnerMode: session.winner_mode || 'TRUE_ODDS',
       playerCount: entries.length,
       totalBets,
+      houseCashStats,
       claimedNumbers,
       entries,
       currentRound: currentRound ? {
@@ -118,7 +326,8 @@ export class GameEngine {
         status: currentRound.status,
         isCashRound,
         minBet: 5,
-        cashMultiplier: 3,
+        multipliers: [1.5, 2, 3],
+        appliedMultiplier: Number(currentRound.applied_multiplier) || 0,
         totalBets,
         winningNumber: currentRound.winning_number,
         winningEntryId: currentRound.winning_entry_id,
@@ -255,11 +464,12 @@ export class GameEngine {
         return {
           success: false,
           status: 400,
-          error: 'Minimum bet is R5 for 3x Cash Prize rounds.'
+          error: 'Minimum bet is R5 for Cash Multiplier rounds.'
         };
       }
       cleanBetAmount = Math.round(parsedBet * 100) / 100;
-      cleanPayoutAmount = Math.round(cleanBetAmount * 3 * 100) / 100;
+      // Base guaranteed minimum multiplier is 1.5x (final 1.5x / 2x / 3x multiplier is rolled on spin)
+      cleanPayoutAmount = Math.round(cleanBetAmount * 1.5 * 100) / 100;
     }
 
     const cleanNickname = String(nickname || 'Player').trim().slice(0, 18).replace(/[<>]/g, '');
@@ -394,11 +604,12 @@ export class GameEngine {
         return {
           success: false,
           status: 400,
-          error: 'Minimum bet is R5 for 3x Cash Prize rounds.'
+          error: 'Minimum bet is R5 for Cash Multiplier rounds.'
         };
       }
       cleanBetAmount = Math.round(parsedBet * 100) / 100;
-      cleanPayoutAmount = Math.round(cleanBetAmount * 3 * 100) / 100;
+      // Base guaranteed minimum multiplier is 1.5x (final 1.5x / 2x / 3x multiplier is rolled on spin)
+      cleanPayoutAmount = Math.round(cleanBetAmount * 1.5 * 100) / 100;
     }
 
     const rawNickname = String(nickname || '').trim().slice(0, 18).replace(/[<>]/g, '');
@@ -586,11 +797,33 @@ export class GameEngine {
 
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     const winnerMode = session?.winner_mode || 'TRUE_ODDS';
+    const roundPrize = currentRound.prize_id
+      ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
+      : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
+    const isCashRound = roundPrize?.prize_type === 'cash_multiplier';
 
     let winningNumber;
     let winningEntry = null;
+    let appliedMultiplier = 0;
 
-    if (winnerMode === 'GUARANTEED' && entries.length > 0) {
+    if (isCashRound) {
+      // Use profit-protected smart cash multiplier engine (1.5x, 2x, 3x)
+      const outcome = this.selectSmartCashOutcome({
+        session,
+        currentRound,
+        entries,
+        winnerMode
+      });
+      winningNumber = outcome.winningNumber;
+      winningEntry = outcome.winningEntry;
+      appliedMultiplier = outcome.appliedMultiplier;
+
+      if (winningEntry && appliedMultiplier > 0) {
+        const finalPayout = Math.round(Number(winningEntry.bet_amount) * appliedMultiplier * 100) / 100;
+        db.prepare('UPDATE entries SET payout_amount = ? WHERE id = ?').run(finalPayout, winningEntry.id);
+        winningEntry.payout_amount = finalPayout;
+      }
+    } else if (winnerMode === 'GUARANTEED' && entries.length > 0) {
       // Party / guaranteed promo mode: selects among claimed numbers
       const winningIndex = crypto.randomInt(0, entries.length);
       winningEntry = entries[winningIndex];
@@ -602,7 +835,7 @@ export class GameEngine {
       winningEntry = entries.find(e => e.number === winningNumber) || null;
     }
 
-    const spinDurationMs = 6500; // 6.5s dramatic arcade spin
+    const spinDurationMs = 5000; // 5.0s fast high-energy arcade spin
     const now = new Date().toISOString();
 
     // Persist result immediately before broadcasting (Page 8 data integrity rule)
@@ -611,16 +844,18 @@ export class GameEngine {
       SET status = 'SPINNING', 
           winning_number = ?, 
           winning_entry_id = ?, 
+          applied_multiplier = ?,
           started_at = ?,
           idempotency_key = ?
       WHERE id = ?
-    `).run(winningNumber, winningEntry ? winningEntry.id : null, now, idempotencyKey || 'spin_' + Date.now(), currentRound.id);
+    `).run(winningNumber, winningEntry ? winningEntry.id : null, appliedMultiplier, now, idempotencyKey || 'spin_' + Date.now(), currentRound.id);
 
     db.prepare(`UPDATE sessions SET status = 'SPINNING' WHERE id = ?`).run(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'SPIN_STARTED', {
       roundId: currentRound.id,
       winningNumber,
+      appliedMultiplier,
       hasWinner: Boolean(winningEntry),
       winningPlayer: winningEntry ? winningEntry.nickname : null,
       idempotencyKey
@@ -630,6 +865,7 @@ export class GameEngine {
     this.io.to(sessionId).emit('spin:started', {
       roundId: currentRound.id,
       winningNumber,
+      appliedMultiplier,
       spinDurationMs,
       hasWinner: Boolean(winningEntry),
       eligibleNumbers: entries.map(e => e.number)
@@ -653,6 +889,7 @@ export class GameEngine {
 
         logAudit(sessionId, 'SERVER', 'engine', 'SPIN_RESULT', {
           winningNumber,
+          appliedMultiplier,
           hasWinner: Boolean(winningEntry),
           winningPlayer: winningEntry ? winningEntry.nickname : null,
           winningToken: winningEntry ? winningEntry.player_token : null
@@ -661,6 +898,7 @@ export class GameEngine {
         this.io.to(sessionId).emit('spin:result', {
           roundId: currentRound.id,
           winningNumber,
+          appliedMultiplier,
           hasWinner: Boolean(winningEntry),
           winnerNickname: winningEntry ? winningEntry.nickname : null,
           winnerToken: winningEntry ? winningEntry.player_token : null,
@@ -675,6 +913,7 @@ export class GameEngine {
     return {
       success: true,
       winningNumber,
+      appliedMultiplier,
       spinDurationMs,
       hasWinner: Boolean(winningEntry),
       winningNickname: winningEntry ? winningEntry.nickname : null,
@@ -703,10 +942,10 @@ export class GameEngine {
       UPDATE rounds SET prize_id = ?, prize_snapshot_json = ? WHERE id = ?
     `).run(prizeObj.id, JSON.stringify(prizeObj), currentRound.id);
 
-    // If switched to cash_multiplier and any existing entries have bet_amount < 5, set minimum R5 bet (R15 payout)
+    // If switched to cash_multiplier and any existing entries have bet_amount < 5, set minimum R5 bet (1.5x baseline R7.50)
     if (prizeObj.prize_type === 'cash_multiplier') {
       db.prepare(`
-        UPDATE entries SET bet_amount = 5, payout_amount = 15
+        UPDATE entries SET bet_amount = 5, payout_amount = 7.5
         WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount < 5
       `).run(currentRound.id);
     }

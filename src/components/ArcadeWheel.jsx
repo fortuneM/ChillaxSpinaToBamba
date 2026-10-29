@@ -21,7 +21,7 @@ export function ArcadeWheel({
   claimedNumbers = [],
   winningNumber = null,
   isSpinning = false,
-  spinDurationMs = 6500,
+  spinDurationMs = 5000,
   onSpinComplete = () => {}
 }) {
   const [rotation, setRotation] = useState(0);
@@ -78,8 +78,8 @@ export function ArcadeWheel({
         delta += 360;
       }
 
-      // 6 full 360-degree spins for maximum arcade suspense
-      const fullRotations = 6 * 360;
+      // 12 full 360-degree spins in 5 seconds for fast, high-velocity arcade action
+      const fullRotations = 12 * 360;
       const finalRotation = currentRotationRef.current + fullRotations + delta;
 
       currentRotationRef.current = finalRotation;
@@ -148,7 +148,7 @@ export function ArcadeWheel({
         style={{
           transform: `rotate(${rotation}deg)`,
           transition: isSpinning
-            ? `transform ${spinDurationMs}ms cubic-bezier(0.12, 0.85, 0.22, 1)`
+            ? `transform ${spinDurationMs}ms cubic-bezier(0.08, 0.88, 0.18, 1)`
             : 'none'
         }}
       >

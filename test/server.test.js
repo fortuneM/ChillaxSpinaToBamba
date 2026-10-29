@@ -212,13 +212,14 @@ async function runTests() {
   assert(history.audits.length >= 5, 'Should have recorded audit trail');
   console.log('  ✅ Audit trail inspection passed');
 
-  // 11. 3x Real Cash Multiplier Mode (Min R5 Bet & 3x Payout)
-  console.log('Test 11: 3x Real Cash Multiplier Mode (Min R5 Bet)');
+  // 11. Smart Profit-Protected Cash Multiplier Engine (1.5x, 2x, 3x | Min R5 Bet)
+  console.log('Test 11: Smart Profit-Protected Cash Multiplier Engine (1.5x, 2x, 3x)');
   const cashRoundRes = engine.createNextRound(session.sessionId, { prizeId: 'prize_cash_3x' });
   assert.strictEqual(cashRoundRes.success, true, 'Cash round creation should succeed');
 
   const cashSnapshot = engine.getSessionSnapshot(session.sessionId);
   assert.strictEqual(cashSnapshot.currentRound.isCashRound, true, 'Round should be marked as isCashRound');
+  assert.deepStrictEqual(cashSnapshot.currentRound.multipliers, [1.5, 2, 3]);
 
   // Reject bet below R5
   const lowBetClaim = engine.claimNumber(session.sessionId, {
@@ -230,7 +231,7 @@ async function runTests() {
   assert.strictEqual(lowBetClaim.success, false, 'Bet below R5 should be rejected');
   assert.strictEqual(lowBetClaim.status, 400);
 
-  // Accept valid R20 bet -> R60 payout (3x)
+  // Accept valid R20 bet -> baseline 1.5x (R30) before spin
   const validCashClaim = engine.claimNumber(session.sessionId, {
     number: 4,
     playerToken: 'token_cash_1',
@@ -239,20 +240,33 @@ async function runTests() {
   });
   assert.strictEqual(validCashClaim.success, true, 'Valid R20 bet should succeed');
   assert.strictEqual(validCashClaim.betAmount, 20);
-  assert.strictEqual(validCashClaim.payoutAmount, 60, 'Payout must be 3x bet (R60)');
+  assert.strictEqual(validCashClaim.payoutAmount, 30, 'Initial baseline payout is 1.5x (R30)');
 
-  // Host walk-in pick with R10 bet -> R30 payout (3x)
+  // Host walk-in pick with R10 bet -> baseline 1.5x (R15)
   const hostCashPick = engine.hostClaimNumber(session.sessionId, {
     number: 9,
     nickname: 'Nomsa',
     betAmount: 10
   });
   assert.strictEqual(hostCashPick.success, true, 'Host cash pick with R10 should succeed');
-  assert.strictEqual(hostCashPick.payoutAmount, 30, 'Host cash pick payout must be R30 (3x)');
+  assert.strictEqual(hostCashPick.payoutAmount, 15, 'Host cash pick baseline payout is R15 (1.5x)');
 
   const snapshotAfterCashBets = engine.getSessionSnapshot(session.sessionId);
   assert.strictEqual(snapshotAfterCashBets.totalBets, 30, 'Total pool should be R30 (R20 + R10)');
-  console.log('  ✅ 3x Real Cash Multiplier mode passed');
+
+  // Close registration & spin in GUARANTEED mode: with R30 pool, maxSafePayout is R22.50,
+  // so the smart engine must pick Nomsa (R10 bet, 1.5x = R15 or 2x = R20) and NEVER 3x (R30 > R22.50)!
+  engine.setWinnerMode(session.sessionId, 'GUARANTEED');
+  engine.closeRegistration(session.sessionId);
+  const cashSpinRes = engine.spin(session.sessionId, { idempotencyKey: 'cash_spin_1' });
+  assert.strictEqual(cashSpinRes.success, true, 'Cash spin should succeed');
+  assert.strictEqual(cashSpinRes.winningNumber, 9, 'Engine should select the affordable R10 bet (#9) to protect house profit');
+  assert([1.5, 2].includes(cashSpinRes.appliedMultiplier), 'Engine must choose 1.5x or 2x and lock 3x when reserve is low');
+  assert.strictEqual(cashSpinRes.winnerPayoutAmount, 10 * cashSpinRes.appliedMultiplier);
+
+  const postSpinStats = engine.getHouseCashStats(session.sessionId);
+  assert(postSpinStats.netProfit >= 10, 'House must remain in positive net profit after spin');
+  console.log('  ✅ Smart Profit-Protected Cash Multiplier (1.5x / 2x / 3x) passed');
 
   console.log('\n🎉 ALL 11 TEST SUITES PASSED FLAWLESSLY!\n');
 }
