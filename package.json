@@ -5,7 +5,7 @@
   "main": "server/server.js",
   "type": "module",
   "scripts": {
-    "dev:server": "node --experimental-sqlite server/server.js",
+    "dev:server": "node --watch --experimental-sqlite server/server.js",
     "dev:client": "vite",
     "dev": "vite",
     "build": "vite build",

@@ -954,6 +954,120 @@ body {
   font-weight: 700;
 }
 
+.host-inline-prize-select {
+  margin-top: 0.2rem;
+  width: 100%;
+  background: #070d1e;
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  border-radius: 8px;
+  color: #fff;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.host-cash-mode-btn {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1.5px solid #10b981;
+  color: #34d399;
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.host-cash-mode-btn.active {
+  background: #10b981;
+  color: #070d1e;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
+}
+
+.host-pool-badge {
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid #10b981;
+  color: #34d399;
+  font-family: var(--font-arcade);
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 0.2rem 0.55rem;
+  border-radius: 8px;
+}
+
+.host-walkin-bet-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.walkin-bet-label {
+  font-size: 0.78rem;
+  color: #34d399;
+  font-weight: 700;
+}
+
+.walkin-bet-presets {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.walkin-bet-chip {
+  background: #070d1e;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #cbd5e1;
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.walkin-bet-chip.active {
+  background: #10b981;
+  color: #070d1e;
+  border-color: #10b981;
+}
+
+.walkin-bet-custom {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: #070d1e;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.8rem;
+  color: #34d399;
+  font-weight: 700;
+}
+
+.walkin-bet-input {
+  width: 54px;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-family: var(--font-arcade);
+  font-size: 0.82rem;
+  font-weight: 800;
+  outline: none;
+}
+
+.walkin-payout-tag {
+  margin-left: auto;
+  font-family: var(--font-arcade);
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #fef08a;
+}
+
 /* Primary Action: SPIN NOW Button */
 .host-primary-action-area {
   margin: 0.5rem 0;
@@ -1556,6 +1670,103 @@ body {
 .player-prize-card .prize-desc {
   font-size: 0.85rem;
   color: var(--text-secondary);
+}
+
+/* Player Cash Bet Selector Card */
+.player-bet-card {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1.5px solid rgba(16, 185, 129, 0.5);
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.player-bet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.9rem;
+}
+
+.bet-title {
+  font-family: var(--font-arcade);
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #34d399;
+}
+
+.bet-payout-preview {
+  font-family: var(--font-arcade);
+  font-size: 0.85rem;
+  color: #fef08a;
+}
+
+.bet-presets-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.45rem;
+}
+
+.bet-preset-pill {
+  background: #070d1e;
+  border: 1.5px solid rgba(16, 185, 129, 0.4);
+  color: #e2e8f0;
+  font-family: var(--font-arcade);
+  font-size: 0.85rem;
+  font-weight: 800;
+  padding: 0.5rem 0.25rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.bet-preset-pill.active {
+  background: #10b981;
+  color: #070d1e;
+  border-color: #10b981;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.45);
+}
+
+.bet-custom-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #070d1e;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 0.45rem 0.75rem;
+}
+
+.rand-prefix {
+  font-family: var(--font-arcade);
+  font-weight: 900;
+  color: #34d399;
+  font-size: 1rem;
+}
+
+.bet-custom-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-family: var(--font-arcade);
+  font-size: 1.05rem;
+  font-weight: 800;
+  outline: none;
+  min-width: 0;
+}
+
+.bet-update-btn {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #070d1e;
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 800;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.65rem;
+  cursor: pointer;
 }
 
 .player-success-alert {

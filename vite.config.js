@@ -17,7 +17,7 @@ function autoStartBackendPlugin() {
       probe.once('error', () => {
         probe.destroy();
         if (!backendProc) {
-          backendProc = spawn(process.execPath, ['--experimental-sqlite', 'server/server.js'], {
+          backendProc = spawn(process.execPath, ['--watch', '--experimental-sqlite', 'server/server.js'], {
             stdio: 'inherit',
             cwd: process.cwd()
           });

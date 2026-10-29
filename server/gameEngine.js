@@ -75,7 +75,7 @@ export class GameEngine {
 
     if (currentRound) {
       entries = db.prepare(`
-        SELECT id, number, player_token, nickname, claimed_at, status 
+        SELECT id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status 
         FROM entries 
         WHERE round_id = ? AND status = 'ACTIVE'
         ORDER BY number ASC
@@ -84,9 +84,16 @@ export class GameEngine {
       if (currentRound.prize_id) {
         prize = db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id);
       }
+      if (!prize && currentRound.prize_snapshot_json) {
+        try {
+          prize = JSON.parse(currentRound.prize_snapshot_json);
+        } catch {}
+      }
     }
 
     const claimedNumbers = entries.map(e => e.number);
+    const totalBets = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
+    const isCashRound = prize?.prize_type === 'cash_multiplier';
 
     const winningEntry = currentRound && currentRound.winning_entry_id
       ? db.prepare('SELECT * FROM entries WHERE id = ?').get(currentRound.winning_entry_id)
@@ -102,17 +109,24 @@ export class GameEngine {
       },
       winnerMode: session.winner_mode || 'TRUE_ODDS',
       playerCount: entries.length,
+      totalBets,
       claimedNumbers,
       entries,
       currentRound: currentRound ? {
         id: currentRound.id,
         roundNumber: currentRound.round_number,
         status: currentRound.status,
+        isCashRound,
+        minBet: 5,
+        cashMultiplier: 3,
+        totalBets,
         winningNumber: currentRound.winning_number,
         winningEntryId: currentRound.winning_entry_id,
         hasWinner: Boolean(currentRound.winning_entry_id),
         winnerNickname: winningEntry ? winningEntry.nickname : null,
-        prize: prize || (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null),
+        winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
+        winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
+        prize,
         startedAt: currentRound.started_at,
         resultAt: currentRound.result_at,
         cancelledAt: currentRound.cancelled_at,
@@ -152,8 +166,9 @@ export class GameEngine {
     // Pick a default prize if none provided
     let prizeId = defaultPrizeId;
     if (!prizeId) {
-      const firstPrize = db.prepare('SELECT id FROM prizes WHERE enabled = 1 LIMIT 1').get();
-      prizeId = firstPrize ? firstPrize.id : null;
+      const firstStandardPrize = db.prepare("SELECT id FROM prizes WHERE enabled = 1 AND prize_type != 'cash_multiplier' LIMIT 1").get();
+      const fallbackPrize = firstStandardPrize || db.prepare('SELECT id FROM prizes WHERE enabled = 1 LIMIT 1').get();
+      prizeId = fallbackPrize ? fallbackPrize.id : null;
     }
 
     const prizeObj = prizeId ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(prizeId) : null;
@@ -204,7 +219,7 @@ export class GameEngine {
   }
 
   // Claim a number atomically for a round
-  claimNumber(sessionId, { number, playerToken, nickname }) {
+  claimNumber(sessionId, { number, playerToken, nickname, betAmount }) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) {
       return { success: false, status: 404, error: 'Session not found.' };
@@ -227,20 +242,61 @@ export class GameEngine {
       return { success: false, status: 400, error: `Number must be between ${session.number_min} and ${session.number_max}.` };
     }
 
+    const prize = currentRound.prize_id
+      ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
+      : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
+    const isCashRound = prize?.prize_type === 'cash_multiplier';
+
+    let cleanBetAmount = 0;
+    let cleanPayoutAmount = 0;
+    if (isCashRound) {
+      const parsedBet = Number(betAmount);
+      if (!Number.isFinite(parsedBet) || parsedBet < 5) {
+        return {
+          success: false,
+          status: 400,
+          error: 'Minimum bet is R5 for 3x Cash Prize rounds.'
+        };
+      }
+      cleanBetAmount = Math.round(parsedBet * 100) / 100;
+      cleanPayoutAmount = Math.round(cleanBetAmount * 3 * 100) / 100;
+    }
+
     const cleanNickname = String(nickname || 'Player').trim().slice(0, 18).replace(/[<>]/g, '');
 
     // Execute atomic claim in SQLite
     try {
       // Check if player already claimed a number in this round
       const existingPlayerEntry = db.prepare(`
-        SELECT number FROM entries 
+        SELECT id, number, bet_amount FROM entries 
         WHERE round_id = ? AND player_token = ? AND status = 'ACTIVE'
       `).get(currentRound.id, playerToken);
 
       if (existingPlayerEntry) {
         if (existingPlayerEntry.number === num) {
+          if (isCashRound && existingPlayerEntry.bet_amount !== cleanBetAmount) {
+            db.prepare(`
+              UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ? WHERE id = ?
+            `).run(cleanBetAmount, cleanPayoutAmount, cleanNickname, existingPlayerEntry.id);
+            this.broadcastSessionState(sessionId);
+            return {
+              success: true,
+              number: num,
+              nickname: cleanNickname,
+              betAmount: cleanBetAmount,
+              payoutAmount: cleanPayoutAmount,
+              message: `Updated your bet on #${num} to R${cleanBetAmount} (Win R${cleanPayoutAmount})!`
+            };
+          }
           // Already owns this number
-          return { success: true, message: 'You already claimed this number.' };
+          return {
+            success: true,
+            number: num,
+            nickname: cleanNickname,
+            betAmount: cleanBetAmount,
+            payoutAmount: cleanPayoutAmount,
+            message: 'You already claimed this number.'
+          };
         }
         // Change player's number: delete previous claim and insert new claim atomically
         db.exec('BEGIN TRANSACTION;');
@@ -251,9 +307,9 @@ export class GameEngine {
 
           const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
           db.prepare(`
-            INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, claimed_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-          `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, new Date().toISOString());
+            INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+          `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
 
           db.exec('COMMIT;');
         } catch (txErr) {
@@ -264,22 +320,35 @@ export class GameEngine {
         // Fresh claim
         const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
         db.prepare(`
-          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, claimed_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-        `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, new Date().toISOString());
+          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+        `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
       }
 
-      logAudit(sessionId, 'PLAYER', playerToken, 'NUMBER_CLAIMED', { number: num, nickname: cleanNickname });
+      logAudit(sessionId, 'PLAYER', playerToken, 'NUMBER_CLAIMED', {
+        number: num,
+        nickname: cleanNickname,
+        betAmount: cleanBetAmount,
+        payoutAmount: cleanPayoutAmount
+      });
 
       // Broadcast update
       this.io.to(sessionId).emit('entry:claimed', {
         number: num,
         nickname: cleanNickname,
-        playerToken
+        playerToken,
+        betAmount: cleanBetAmount,
+        payoutAmount: cleanPayoutAmount
       });
       this.broadcastSessionState(sessionId);
 
-      return { success: true, number: num, nickname: cleanNickname };
+      return {
+        success: true,
+        number: num,
+        nickname: cleanNickname,
+        betAmount: cleanBetAmount,
+        payoutAmount: cleanPayoutAmount
+      };
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE constraint failed')) {
         return { success: false, status: 409, error: `Number #${num} was just claimed by someone else!` };
@@ -289,7 +358,7 @@ export class GameEngine {
   }
 
   // Host manually claims a number on behalf of a player without a phone
-  hostClaimNumber(sessionId, { number, nickname }) {
+  hostClaimNumber(sessionId, { number, nickname, betAmount }) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) {
       return { success: false, status: 404, error: 'Session not found.' };
@@ -310,6 +379,26 @@ export class GameEngine {
     const num = parseInt(number, 10);
     if (isNaN(num) || num < session.number_min || num > session.number_max) {
       return { success: false, status: 400, error: `Number must be between ${session.number_min} and ${session.number_max}.` };
+    }
+
+    const prize = currentRound.prize_id
+      ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
+      : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
+    const isCashRound = prize?.prize_type === 'cash_multiplier';
+
+    let cleanBetAmount = 0;
+    let cleanPayoutAmount = 0;
+    if (isCashRound) {
+      const parsedBet = Number(betAmount);
+      if (!Number.isFinite(parsedBet) || parsedBet < 5) {
+        return {
+          success: false,
+          status: 400,
+          error: 'Minimum bet is R5 for 3x Cash Prize rounds.'
+        };
+      }
+      cleanBetAmount = Math.round(parsedBet * 100) / 100;
+      cleanPayoutAmount = Math.round(cleanBetAmount * 3 * 100) / 100;
     }
 
     const rawNickname = String(nickname || '').trim().slice(0, 18).replace(/[<>]/g, '');
@@ -332,13 +421,15 @@ export class GameEngine {
       const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
 
       db.prepare(`
-        INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, claimed_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-      `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, new Date().toISOString());
+        INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+      `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
 
       logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_CLAIMED', {
         number: num,
         nickname: cleanNickname,
+        betAmount: cleanBetAmount,
+        payoutAmount: cleanPayoutAmount,
         playerToken
       });
 
@@ -346,6 +437,8 @@ export class GameEngine {
         number: num,
         nickname: cleanNickname,
         playerToken,
+        betAmount: cleanBetAmount,
+        payoutAmount: cleanPayoutAmount,
         isHostPick: true
       });
       this.broadcastSessionState(sessionId);
@@ -354,6 +447,8 @@ export class GameEngine {
         success: true,
         number: num,
         nickname: cleanNickname,
+        betAmount: cleanBetAmount,
+        payoutAmount: cleanPayoutAmount,
         playerToken,
         isHostPick: true
       };
@@ -569,6 +664,8 @@ export class GameEngine {
           hasWinner: Boolean(winningEntry),
           winnerNickname: winningEntry ? winningEntry.nickname : null,
           winnerToken: winningEntry ? winningEntry.player_token : null,
+          winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
+          winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
           prize
         });
         this.broadcastSessionState(sessionId);
@@ -580,8 +677,48 @@ export class GameEngine {
       winningNumber,
       spinDurationMs,
       hasWinner: Boolean(winningEntry),
-      winningNickname: winningEntry ? winningEntry.nickname : null
+      winningNickname: winningEntry ? winningEntry.nickname : null,
+      winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
+      winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0
     };
+  }
+
+  // Update active round prize (e.g. toggling between Standard Prize and 3x Cash Multiplier)
+  setRoundPrize(sessionId, prizeId) {
+    const currentRound = db.prepare(`
+      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
+    `).get(sessionId);
+    if (!currentRound) return { success: false, status: 404, error: 'Active round not found.' };
+
+    if (currentRound.status !== 'REGISTRATION_OPEN') {
+      return { success: false, status: 409, error: 'Can only change prize while registration is open.' };
+    }
+
+    const prizeObj = db.prepare('SELECT * FROM prizes WHERE id = ?').get(prizeId);
+    if (!prizeObj) {
+      return { success: false, status: 404, error: 'Selected prize not found.' };
+    }
+
+    db.prepare(`
+      UPDATE rounds SET prize_id = ?, prize_snapshot_json = ? WHERE id = ?
+    `).run(prizeObj.id, JSON.stringify(prizeObj), currentRound.id);
+
+    // If switched to cash_multiplier and any existing entries have bet_amount < 5, set minimum R5 bet (R15 payout)
+    if (prizeObj.prize_type === 'cash_multiplier') {
+      db.prepare(`
+        UPDATE entries SET bet_amount = 5, payout_amount = 15
+        WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount < 5
+      `).run(currentRound.id);
+    }
+
+    logAudit(sessionId, 'HOST', 'host', 'ROUND_PRIZE_UPDATED', {
+      roundId: currentRound.id,
+      prizeId: prizeObj.id,
+      prizeName: prizeObj.name
+    });
+
+    this.broadcastSessionState(sessionId);
+    return { success: true, prize: prizeObj };
   }
 
   // Toggle difficulty mode (TRUE_ODDS vs GUARANTEED)
@@ -694,7 +831,8 @@ export class GameEngine {
     const rounds = db.prepare(`
       SELECT r.*, 
              e.number as winner_number, e.nickname as winner_nickname,
-             p.name as prize_name, p.value as prize_value,
+             e.bet_amount as winner_bet_amount, e.payout_amount as winner_payout_amount,
+             p.name as prize_name, p.value as prize_value, p.prize_type as prize_type,
              red.redeemed_at, red.redeemed_by
       FROM rounds r
       LEFT JOIN entries e ON r.winning_entry_id = e.id

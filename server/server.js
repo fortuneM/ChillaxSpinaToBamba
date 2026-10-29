@@ -123,11 +123,11 @@ app.post('/api/sessions/:id/pair-tv', (req, res) => {
 
 // POST /api/sessions/:id/entries: Claim a number for the current round (Player)
 app.post('/api/sessions/:id/entries', (req, res) => {
-  const { number, playerToken, nickname } = req.body;
+  const { number, playerToken, nickname, betAmount } = req.body;
   if (!playerToken) {
     return res.status(400).json({ error: 'Player token is required.' });
   }
-  const result = engine.claimNumber(req.params.id, { number, playerToken, nickname });
+  const result = engine.claimNumber(req.params.id, { number, playerToken, nickname, betAmount });
   if (!result.success) {
     return res.status(result.status || 400).json(result);
   }
@@ -136,8 +136,8 @@ app.post('/api/sessions/:id/entries', (req, res) => {
 
 // POST /api/sessions/:id/host-entries: Host claims a number for a player without a phone (Host)
 app.post('/api/sessions/:id/host-entries', requireHostAuth, (req, res) => {
-  const { number, nickname } = req.body;
-  const result = engine.hostClaimNumber(req.params.id, { number, nickname });
+  const { number, nickname, betAmount } = req.body;
+  const result = engine.hostClaimNumber(req.params.id, { number, nickname, betAmount });
   if (!result.success) {
     return res.status(result.status || 400).json(result);
   }
@@ -147,6 +147,16 @@ app.post('/api/sessions/:id/host-entries', requireHostAuth, (req, res) => {
 // DELETE /api/sessions/:id/host-entries/:number: Host removes/frees a claimed number (Host)
 app.delete('/api/sessions/:id/host-entries/:number', requireHostAuth, (req, res) => {
   const result = engine.hostUnclaimNumber(req.params.id, req.params.number);
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// POST /api/sessions/:id/prize: Change active round prize / toggle 3x Cash Multiplier (Host)
+app.post('/api/sessions/:id/prize', requireHostAuth, (req, res) => {
+  const { prizeId } = req.body;
+  const result = engine.setRoundPrize(req.params.id, prizeId);
   if (!result.success) {
     return res.status(result.status || 400).json(result);
   }

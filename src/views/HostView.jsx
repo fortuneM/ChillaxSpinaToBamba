@@ -21,6 +21,7 @@ export function HostView() {
   const [showHistory, setShowHistory] = useState(false);
   const [redeemNotes, setRedeemNotes] = useState('');
   const [walkInName, setWalkInName] = useState('');
+  const [walkInBet, setWalkInBet] = useState(5);
   const [selectedPickNum, setSelectedPickNum] = useState(null);
   const [hostPickFeedback, setHostPickFeedback] = useState('');
   const [isAssigningPick, setIsAssigningPick] = useState(false);
@@ -184,17 +185,42 @@ export function HostView() {
   // Host manually claims a number for a player without a phone
   const handleHostClaimNumber = async (num, customName = walkInName) => {
     if (!session?.sessionId || isAssigningPick) return;
+    const isCashRound = Boolean(
+      session?.currentRound?.isCashRound ||
+      session?.currentRound?.prize?.prize_type === 'cash_multiplier'
+    );
+    const numericBet = Number(walkInBet);
+    if (isCashRound && (!Number.isFinite(numericBet) || numericBet < 5)) {
+      setActionError('Minimum bet amount is R5 for 3x Cash Prize rounds.');
+      return;
+    }
+
     setIsAssigningPick(true);
     setHostPickFeedback('');
     const data = await apiRequest(`/api/sessions/${session.sessionId}/host-entries`, 'POST', {
       number: num,
-      nickname: customName ? customName.trim() : ''
+      nickname: customName ? customName.trim() : '',
+      betAmount: isCashRound ? numericBet : 0
     });
     setIsAssigningPick(false);
     if (data?.success) {
-      setHostPickFeedback(`Assigned #${data.number} to ${data.nickname}`);
+      setHostPickFeedback(
+        isCashRound
+          ? `Assigned #${data.number} to ${data.nickname} (Bet R${data.betAmount} → Win R${data.payoutAmount})`
+          : `Assigned #${data.number} to ${data.nickname}`
+      );
       setWalkInName('');
       setSelectedPickNum(null);
+    }
+  };
+
+  // Switch active round prize (e.g. toggle between 3x Cash Multiplier and Standard Prizes)
+  const handleChangeRoundPrize = async (newPrizeId) => {
+    if (!session?.sessionId) return;
+    setSelectedPrizeId(newPrizeId);
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/prize`, 'POST', { prizeId: newPrizeId });
+    if (data?.success) {
+      fetchPrizes();
     }
   };
 
@@ -366,6 +392,7 @@ export function HostView() {
   const status = session.status;
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
+  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier');
   const canSpin = status === 'REGISTRATION_CLOSED' && session.playerCount > 0;
   const isSpinning = status === 'SPINNING';
   const isResult = status === 'RESULT';
@@ -419,14 +446,47 @@ export function HostView() {
         </div>
       </div>
 
-      {/* Active Prize Card */}
+      {/* Active Prize Card & Cash 3x Mode Switcher */}
       {prize && (
         <div className="host-active-prize-card">
           <div className="prize-indicator" style={{ background: prize.color || '#00f2fe' }} />
           <div className="prize-info">
-            <div className="prize-label">CURRENT ROUND PRIZE</div>
-            <div className="prize-name">{prize.name}</div>
+            <div className="prize-label">
+              {isCashRound ? '💰 REAL CASH MODE (3X BET • MIN R5)' : 'CURRENT ROUND PRIZE'}
+            </div>
+            {status === 'REGISTRATION_OPEN' ? (
+              <select
+                value={prize.id}
+                onChange={(e) => handleChangeRoundPrize(e.target.value)}
+                className="host-inline-prize-select"
+              >
+                {prizes.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.value})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="prize-name">{prize.name}</div>
+            )}
           </div>
+          {status === 'REGISTRATION_OPEN' && (
+            <button
+              type="button"
+              onClick={() => {
+                if (isCashRound) {
+                  const firstStd = prizes.find((p) => p.prize_type !== 'cash_multiplier');
+                  if (firstStd) handleChangeRoundPrize(firstStd.id);
+                } else {
+                  handleChangeRoundPrize('prize_cash_3x');
+                }
+              }}
+              className={`host-cash-mode-btn ${isCashRound ? 'active' : ''}`}
+              title="Toggle 3x Cash Multiplier Mode"
+            >
+              {isCashRound ? '💰 3x Cash ON' : '💰 Use 3x Cash'}
+            </button>
+          )}
           <Award size={24} style={{ color: prize.color || '#00f2fe' }} />
         </div>
       )}
@@ -484,6 +544,8 @@ export function HostView() {
                 {(() => {
                   const winningEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
                   const isHostEntry = winningEntry?.player_token?.startsWith('host_pick_');
+                  const winBet = Number(winningEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
+                  const winPayout = Number(winningEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
                   return (
                     <div className="result-announcement">
                       <span className="result-num-pill">#{currentRound.winningNumber}</span>
@@ -492,7 +554,13 @@ export function HostView() {
                           WINNER: {winningEntry?.nickname || 'Player'}
                           {isHostEntry && <span className="host-pick-tag ml-2">HOST PICK</span>}
                         </strong>
-                        <span>Prize: {prize?.name}</span>
+                        {isCashRound && winPayout > 0 ? (
+                          <span className="text-green font-bold">
+                            💰 PAYOUT: R{winPayout} CASH (3x R{winBet} bet)
+                          </span>
+                        ) : (
+                          <span>Prize: {prize?.name}</span>
+                        )}
                       </div>
                     </div>
                   );
@@ -549,10 +617,19 @@ export function HostView() {
       {/* Number Claims Grid & Walk-in Host Pick Controls */}
       <div className="host-claimed-grid-card">
         <div className="grid-card-header">
-          <h4>Wheel Numbers & Player Picks ({session.playerCount}/{session.numberRange.max} Claimed)</h4>
+          <div className="flex justify-between items-center">
+            <h4>Wheel Numbers & Player Picks ({session.playerCount}/{session.numberRange.max} Claimed)</h4>
+            {isCashRound && (
+              <span className="host-pool-badge">
+                Pool: R{session.totalBets || 0}
+              </span>
+            )}
+          </div>
           {status === 'REGISTRATION_OPEN' && (
             <span className="host-grid-subtitle">
-              No phone? Enter a player&apos;s name below and tap an open number to claim it for them.
+              {isCashRound
+                ? '3x Cash Round: Enter player name + bet amount (min R5), then tap an open number.'
+                : "No phone? Enter a player's name below and tap an open number to claim it for them."}
             </span>
           )}
         </div>
@@ -568,6 +645,38 @@ export function HostView() {
               }}
               className="host-walkin-form"
             >
+              {isCashRound && (
+                <div className="host-walkin-bet-row">
+                  <span className="walkin-bet-label">Bet (Min R5):</span>
+                  <div className="walkin-bet-presets">
+                    {[5, 10, 20, 50].map((amt) => (
+                      <button
+                        key={amt}
+                        type="button"
+                        onClick={() => setWalkInBet(amt)}
+                        className={`walkin-bet-chip ${Number(walkInBet) === amt ? 'active' : ''}`}
+                      >
+                        R{amt}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="walkin-bet-custom">
+                    <span>R</span>
+                    <input
+                      type="number"
+                      min="5"
+                      step="1"
+                      value={walkInBet}
+                      onChange={(e) => setWalkInBet(e.target.value)}
+                      className="walkin-bet-input"
+                    />
+                  </div>
+                  <span className="walkin-payout-tag">
+                    Win R{Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 3 * 100) / 100 : 0}
+                  </span>
+                </div>
+              )}
+
               <div className="host-walkin-input-row">
                 <UserPlus size={18} className="walkin-icon text-cyan" />
                 <input
@@ -589,7 +698,7 @@ export function HostView() {
                     disabled={isAssigningPick}
                     className="host-walkin-assign-btn"
                   >
-                    Assign #{selectedPickNum}
+                    Assign #{selectedPickNum}{isCashRound ? ` (R${walkInBet})` : ''}
                   </button>
                 )}
               </div>
@@ -605,6 +714,11 @@ export function HostView() {
                     <span className="selected-num-badge">#{selectedPickNum}</span>
                     <span>
                       Claimed by <strong>{selEntry.nickname}</strong>{' '}
+                      {isCashRound && selEntry.bet_amount > 0 && (
+                        <strong className="text-green">
+                          • Bet R{selEntry.bet_amount} (Win R{selEntry.payout_amount})
+                        </strong>
+                      )}{' '}
                       <span className="text-muted text-xs">
                         ({isHostEntry ? 'Host Pick' : 'Phone'})
                       </span>
@@ -660,8 +774,17 @@ export function HostView() {
                   <span className="chip-num">{num}</span>
                   {isHostPick && <span className="chip-host-dot" title="Entered by Host">H</span>}
                 </div>
-                <span className="chip-player" title={entry ? entry.nickname : 'Tap to claim'}>
-                  {entry ? entry.nickname : (isInteractive ? '+ Pick' : '—')}
+                <span
+                  className="chip-player"
+                  title={
+                    entry
+                      ? `${entry.nickname}${entry.bet_amount > 0 ? ` (Bet R${entry.bet_amount} → Win R${entry.payout_amount})` : ''}`
+                      : 'Tap to claim'
+                  }
+                >
+                  {entry
+                    ? `${entry.nickname}${isCashRound && entry.bet_amount > 0 ? ` • R${entry.bet_amount}` : ''}`
+                    : (isInteractive ? '+ Pick' : '—')}
                 </span>
               </button>
             );
@@ -730,7 +853,11 @@ export function HostView() {
                         <td>#{r.round_number}</td>
                         <td className="text-cyan font-bold">{r.winning_number ? `#${r.winning_number}` : '—'}</td>
                         <td>{r.winner_nickname || '—'}</td>
-                        <td>{r.prize_name || 'Standard'}</td>
+                        <td>
+                          {r.prize_type === 'cash_multiplier' && r.winner_payout_amount > 0
+                            ? `R${r.winner_payout_amount} Cash (3x R${r.winner_bet_amount})`
+                            : (r.prize_name || 'Standard')}
+                        </td>
                         <td>
                           {r.redeemed_at ? (
                             <span className="badge-redeemed">✓ Redeemed</span>

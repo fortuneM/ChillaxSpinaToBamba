@@ -225,6 +225,7 @@ export function TvView() {
   const status = session.status;
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
+  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier');
   const isResultState = status === 'RESULT' && currentRound?.winningNumber;
   const hasWinner = Boolean(currentRound?.hasWinner || currentRound?.winningEntryId);
 
@@ -308,11 +309,15 @@ export function TvView() {
           {/* Current Round Prize Spotlight */}
           {prize && (
             <div className="tv-prize-spotlight" style={{ borderColor: prize.color || '#00f2fe' }}>
-              <div className="prize-spotlight-label">ROUND PRIZE</div>
+              <div className="prize-spotlight-label">
+                {isCashRound ? '💰 3X CASH PAYOUT MODE' : 'ROUND PRIZE'}
+              </div>
               <div className="prize-spotlight-name" style={{ color: prize.color || '#00f2fe' }}>
                 {prize.name}
               </div>
-              <div className="prize-spotlight-desc">{prize.description}</div>
+              <div className="prize-spotlight-desc">
+                {isCashRound ? 'Bet from R5 • Winner gets 3x their bet!' : prize.description}
+              </div>
             </div>
           )}
         </section>
@@ -375,15 +380,26 @@ export function TvView() {
               )}
 
               {/* Prize Won */}
-              {prize && (
-                <div className="result-prize-box">
-                  <span className="result-won-label">WINS PRIZE:</span>
-                  <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
-                    {prize.name}
-                  </span>
-                  <span className="result-prize-val">{prize.description}</span>
-                </div>
-              )}
+              {prize && (() => {
+                const winEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
+                const winBet = Number(winEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
+                const winPayout = Number(winEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
+                return (
+                  <div className="result-prize-box">
+                    <span className="result-won-label">
+                      {isCashRound ? 'WINS 3X CASH PAYOUT:' : 'WINS PRIZE:'}
+                    </span>
+                    <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
+                      {isCashRound && winPayout > 0 ? `R${winPayout} CASH!` : prize.name}
+                    </span>
+                    <span className="result-prize-val">
+                      {isCashRound && winBet > 0
+                        ? `3x their R${winBet} bet!`
+                        : prize.description}
+                    </span>
+                  </div>
+                );
+              })()}
 
               <div className="result-footer-instructions">
                 {session.entries?.find(e => e.number === currentRound.winningNumber)?.player_token?.startsWith('host_pick_')

@@ -212,7 +212,49 @@ async function runTests() {
   assert(history.audits.length >= 5, 'Should have recorded audit trail');
   console.log('  ✅ Audit trail inspection passed');
 
-  console.log('\n🎉 ALL 10 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 11. 3x Real Cash Multiplier Mode (Min R5 Bet & 3x Payout)
+  console.log('Test 11: 3x Real Cash Multiplier Mode (Min R5 Bet)');
+  const cashRoundRes = engine.createNextRound(session.sessionId, { prizeId: 'prize_cash_3x' });
+  assert.strictEqual(cashRoundRes.success, true, 'Cash round creation should succeed');
+
+  const cashSnapshot = engine.getSessionSnapshot(session.sessionId);
+  assert.strictEqual(cashSnapshot.currentRound.isCashRound, true, 'Round should be marked as isCashRound');
+
+  // Reject bet below R5
+  const lowBetClaim = engine.claimNumber(session.sessionId, {
+    number: 4,
+    playerToken: 'token_cash_1',
+    nickname: 'Bongani',
+    betAmount: 3
+  });
+  assert.strictEqual(lowBetClaim.success, false, 'Bet below R5 should be rejected');
+  assert.strictEqual(lowBetClaim.status, 400);
+
+  // Accept valid R20 bet -> R60 payout (3x)
+  const validCashClaim = engine.claimNumber(session.sessionId, {
+    number: 4,
+    playerToken: 'token_cash_1',
+    nickname: 'Bongani',
+    betAmount: 20
+  });
+  assert.strictEqual(validCashClaim.success, true, 'Valid R20 bet should succeed');
+  assert.strictEqual(validCashClaim.betAmount, 20);
+  assert.strictEqual(validCashClaim.payoutAmount, 60, 'Payout must be 3x bet (R60)');
+
+  // Host walk-in pick with R10 bet -> R30 payout (3x)
+  const hostCashPick = engine.hostClaimNumber(session.sessionId, {
+    number: 9,
+    nickname: 'Nomsa',
+    betAmount: 10
+  });
+  assert.strictEqual(hostCashPick.success, true, 'Host cash pick with R10 should succeed');
+  assert.strictEqual(hostCashPick.payoutAmount, 30, 'Host cash pick payout must be R30 (3x)');
+
+  const snapshotAfterCashBets = engine.getSessionSnapshot(session.sessionId);
+  assert.strictEqual(snapshotAfterCashBets.totalBets, 30, 'Total pool should be R30 (R20 + R10)');
+  console.log('  ✅ 3x Real Cash Multiplier mode passed');
+
+  console.log('\n🎉 ALL 11 TEST SUITES PASSED FLAWLESSLY!\n');
 }
 
 runTests().catch(err => {

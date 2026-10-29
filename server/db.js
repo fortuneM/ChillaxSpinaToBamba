@@ -75,6 +75,8 @@ db.exec(`
     number INTEGER NOT NULL,
     player_token TEXT NOT NULL,
     nickname TEXT NOT NULL,
+    bet_amount REAL NOT NULL DEFAULT 0,
+    payout_amount REAL NOT NULL DEFAULT 0,
     claimed_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -109,6 +111,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 `);
 
+try {
+  db.exec('ALTER TABLE entries ADD COLUMN bet_amount REAL NOT NULL DEFAULT 0;');
+} catch(e) {}
+
+try {
+  db.exec('ALTER TABLE entries ADD COLUMN payout_amount REAL NOT NULL DEFAULT 0;');
+} catch(e) {}
+
 // Insert default prizes if not exist
 const countPrizes = db.prepare('SELECT COUNT(*) as c FROM prizes').get();
 if (countPrizes.c === 0) {
@@ -118,6 +128,7 @@ if (countPrizes.c === 0) {
   `);
 
   const defaultPrizes = [
+    { id: 'prize_cash_3x', name: '💰 3x Cash Multiplier', description: 'Win 3x your bet in real cash! (Min bet R5)', prizeType: 'cash_multiplier', value: '3x Bet (Cash)', color: '#10b981' },
     { id: 'prize_1', name: '10 Mins PS5 Gaming', description: '10 free minutes on PS5 console', prizeType: 'gaming_time', value: '10 mins', color: '#8b5cf6' },
     { id: 'prize_2', name: 'Free Cold Beverage', description: 'Any chilled soda or energy drink', prizeType: 'snack', value: 'Soda / Juice', color: '#06b6d4' },
     { id: 'prize_3', name: 'Chips & Dip Combo', description: 'Snack pack from the counter', prizeType: 'snack', value: 'Snack Pack', color: '#f59e0b' },
@@ -129,6 +140,12 @@ if (countPrizes.c === 0) {
   for (const p of defaultPrizes) {
     insertPrize.run(p.id, p.name, p.description, p.prizeType, p.value, p.color, 1, 99);
   }
+} else {
+  // Ensure the 3x Cash Multiplier prize exists in older databases
+  db.prepare(`
+    INSERT OR IGNORE INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
+    VALUES ('prize_cash_3x', '💰 3x Cash Multiplier', 'Win 3x your bet in real cash! (Min bet R5)', 'cash_multiplier', '3x Bet (Cash)', '#10b981', 1, 999)
+  `).run();
 }
 
 export function logAudit(sessionId, actorType, actorId, action, metadata = {}) {

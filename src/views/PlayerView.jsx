@@ -12,6 +12,7 @@ export function PlayerView() {
   const [errorMsg, setErrorMsg] = useState('');
   const [claimSuccessMsg, setClaimSuccessMsg] = useState('');
   const [isClaiming, setIsClaiming] = useState(false);
+  const [betAmount, setBetAmount] = useState(5);
 
   const playerToken = getPlayerToken();
 
@@ -93,6 +94,17 @@ export function PlayerView() {
       return;
     }
 
+    const isCashRound = Boolean(
+      session?.currentRound?.isCashRound ||
+      session?.currentRound?.prize?.prize_type === 'cash_multiplier'
+    );
+    const numericBet = Number(betAmount);
+    if (isCashRound && (!Number.isFinite(numericBet) || numericBet < 5)) {
+      setErrorMsg('Minimum bet amount is R5 for 3x Cash Prize rounds!');
+      sounds.playError();
+      return;
+    }
+
     saveNickname(nickname.trim());
     setIsClaiming(true);
     setErrorMsg('');
@@ -105,7 +117,8 @@ export function PlayerView() {
         body: JSON.stringify({
           number: num,
           playerToken,
-          nickname: nickname.trim()
+          nickname: nickname.trim(),
+          betAmount: isCashRound ? numericBet : 0
         })
       });
 
@@ -115,7 +128,11 @@ export function PlayerView() {
         sounds.playError();
       } else {
         sounds.playClick();
-        setClaimSuccessMsg(`You claimed Number #${num}! Good luck!`);
+        if (isCashRound) {
+          setClaimSuccessMsg(`You claimed #${num} with a R${data.betAmount} bet — Win R${data.payoutAmount} Cash!`);
+        } else {
+          setClaimSuccessMsg(`You claimed Number #${num}! Good luck!`);
+        }
       }
     } catch {
       setErrorMsg('Network error submitting claim.');
@@ -199,6 +216,7 @@ export function PlayerView() {
   const status = session.status;
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
+  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier');
   const myEntry = session.entries?.find((e) => e.player_token === playerToken);
   const myClaimedNumber = myEntry?.number;
   const isWinner = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber === currentRound?.winningNumber;
@@ -238,6 +256,9 @@ export function PlayerView() {
         {myClaimedNumber && (
           <div className="my-pick-badge">
             MY PICK: <strong>#{myClaimedNumber}</strong>
+            {isCashRound && myEntry?.bet_amount >= 5 && (
+              <span> • R{myEntry.bet_amount} (Win R{myEntry.payout_amount})</span>
+            )}
           </div>
         )}
       </div>
@@ -274,10 +295,58 @@ export function PlayerView() {
       {prize && (
         <div className="player-prize-card">
           <div className="prize-pill" style={{ background: prize.color || '#00f2fe' }}>
-            THIS ROUND'S PRIZE
+            {isCashRound ? '💰 REAL CASH MULTIPLIER ROUND' : "THIS ROUND'S PRIZE"}
           </div>
           <div className="prize-title">{prize.name}</div>
           <div className="prize-desc">{prize.description}</div>
+        </div>
+      )}
+
+      {/* Cash Bet Amount Selector (Only for 3x Cash Multiplier Rounds) */}
+      {isCashRound && (
+        <div className="player-bet-card">
+          <div className="player-bet-header">
+            <span className="bet-title">💰 Enter Your Bet (Min R5)</span>
+            <span className="bet-payout-preview">
+              Win 3x: <strong>R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</strong>
+            </span>
+          </div>
+          <div className="bet-presets-row">
+            {[5, 10, 20, 50, 100].map((amt) => (
+              <button
+                key={amt}
+                type="button"
+                disabled={status !== 'REGISTRATION_OPEN'}
+                onClick={() => setBetAmount(amt)}
+                className={`bet-preset-pill ${Number(betAmount) === amt ? 'active' : ''}`}
+              >
+                R{amt}
+              </button>
+            ))}
+          </div>
+          <div className="bet-custom-input-row">
+            <span className="rand-prefix">R</span>
+            <input
+              type="number"
+              min="5"
+              step="1"
+              disabled={status !== 'REGISTRATION_OPEN'}
+              value={betAmount}
+              onChange={(e) => setBetAmount(e.target.value)}
+              placeholder="Enter amount (min R5)"
+              className="bet-custom-input"
+            />
+            {myClaimedNumber && status === 'REGISTRATION_OPEN' && Number(myEntry?.bet_amount) !== Number(betAmount) && Number(betAmount) >= 5 && (
+              <button
+                type="button"
+                disabled={isClaiming}
+                onClick={() => handleClaimNumber(myClaimedNumber)}
+                className="bet-update-btn"
+              >
+                Update Bet
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -304,9 +373,17 @@ export function PlayerView() {
             Your number <strong>#{myClaimedNumber}</strong> was selected!
           </p>
           <div className="winner-prize-display" style={{ borderColor: prize?.color || '#00f2fe' }}>
-            <span className="won-prize-label">PRIZE WON</span>
-            <span className="won-prize-name">{prize?.name}</span>
-            <span className="won-prize-desc">{prize?.description}</span>
+            <span className="won-prize-label">{isCashRound ? '3X CASH PAYOUT WON' : 'PRIZE WON'}</span>
+            <span className="won-prize-name">
+              {isCashRound && myEntry?.payout_amount
+                ? `R${myEntry.payout_amount} CASH`
+                : prize?.name}
+            </span>
+            <span className="won-prize-desc">
+              {isCashRound && myEntry?.bet_amount
+                ? `3x your R${myEntry.bet_amount} bet!`
+                : prize?.description}
+            </span>
           </div>
           <div className="redemption-token-box">
             <span>VERIFICATION TOKEN</span>
