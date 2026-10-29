@@ -6,6 +6,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { GameEngine } from './gameEngine.js';
+import {
+  connectMongo,
+  syncWithChillaxGamingHub,
+  getMongoStatus,
+  buildMongoUri,
+  saveMongoUriToEnv
+} from './mongo.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,8 +61,76 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     service: 'Chillax Spin & Win Coordinator',
     venue: 'Chillax Gaming Center',
-    timezone: 'Africa/Johannesburg'
+    timezone: 'Africa/Johannesburg',
+    mongodb: getMongoStatus()
   });
+});
+
+// MongoDB `chillaxgaminghub` connection status & synced hub entities
+app.get('/api/mongodb/status', (req, res) => {
+  res.json(getMongoStatus());
+});
+
+// Connect / update MongoDB `chillaxgaminghub` credentials at runtime & sync
+app.post('/api/mongodb/connect', requireHostAuth, async (req, res) => {
+  try {
+    const { uri, username, password, clusterHost, dbName = 'chillaxgaminghub' } = req.body;
+    const resolvedUri = buildMongoUri({ uri, username, password, clusterHost, dbName });
+
+    if (!resolvedUri) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a valid MongoDB Atlas connection string or username & password.'
+      });
+    }
+
+    const connRes = await connectMongo(resolvedUri);
+    if (!connRes.connected) {
+      return res.status(400).json({
+        success: false,
+        error: connRes.error || 'Failed to connect to MongoDB Atlas.',
+        status: getMongoStatus()
+      });
+    }
+
+    saveMongoUriToEnv(resolvedUri, dbName);
+    const syncRes = await syncWithChillaxGamingHub(db);
+    const status = getMongoStatus();
+    io.emit('mongodb:status', status);
+
+    res.json({
+      success: true,
+      message: `Connected & synced with MongoDB database "${status.dbName}"`,
+      sync: syncRes,
+      status
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: 'MongoDB connection error: ' + err.message,
+      status: getMongoStatus()
+    });
+  }
+});
+
+// Trigger manual two-way sync with `chillaxgaminghub`
+app.post('/api/mongodb/sync', requireHostAuth, async (req, res) => {
+  try {
+    const syncRes = await syncWithChillaxGamingHub(db);
+    const status = getMongoStatus();
+    io.emit('mongodb:status', status);
+    res.json({
+      success: Boolean(syncRes.synced),
+      sync: syncRes,
+      status
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: 'MongoDB sync failed: ' + err.message,
+      status: getMongoStatus()
+    });
+  }
 });
 
 // List prizes
@@ -113,8 +188,8 @@ app.get('/api/sessions/:id/state', (req, res) => {
 
 // POST /api/sessions/:id/pair-tv: Pair TV display using short-lived pairing code (Host/TV)
 app.post('/api/sessions/:id/pair-tv', (req, res) => {
-  const { pairingCode } = req.body;
-  const result = engine.pairTv(pairingCode || req.params.id);
+  const { pairingCode, tvId } = req.body;
+  const result = engine.pairTv(pairingCode || req.params.id, tvId || null);
   if (!result.success) {
     return res.status(404).json(result);
   }
@@ -292,14 +367,25 @@ app.get('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`=======================================================`);
-  console.log(`🎮 CHILLAX SPIN & WIN SERVER IS RUNNING`);
-  console.log(`📡 URL: http://localhost:${PORT}`);
-  console.log(`📺 TV Display: http://localhost:${PORT}/tv`);
-  console.log(`📱 Host Controller: http://localhost:${PORT}/host`);
-  console.log(`🎯 Player Join: http://localhost:${PORT}/join`);
-  console.log(`=======================================================`);
-});
+
+async function startServer() {
+  const mongoConn = await connectMongo();
+  if (mongoConn.connected) {
+    await syncWithChillaxGamingHub(db);
+  }
+
+  server.listen(PORT, () => {
+    console.log(`=======================================================`);
+    console.log(`🎮 CHILLAX SPIN & WIN SERVER IS RUNNING`);
+    console.log(`🗄️  MongoDB: ${mongoConn.connected ? `Connected to "${mongoConn.dbName}" (${mongoConn.host})` : 'Local SQLite Cache (Ready to link chillaxgaminghub)'}`);
+    console.log(`📡 URL: http://localhost:${PORT}`);
+    console.log(`📺 TV Display: http://localhost:${PORT}/tv`);
+    console.log(`📱 Host Controller: http://localhost:${PORT}/host`);
+    console.log(`🎯 Player Join: http://localhost:${PORT}/join`);
+    console.log(`=======================================================`);
+  });
+}
+
+startServer();
 
 export { app, server, engine };

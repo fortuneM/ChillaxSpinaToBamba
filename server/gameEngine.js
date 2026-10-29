@@ -1,5 +1,13 @@
 import crypto from 'node:crypto';
 import { db, logAudit } from './db.js';
+import {
+  syncRecordToMongo,
+  deleteRecordFromMongo,
+  recordHubTransaction,
+  updateHubTvStatus,
+  isValidHubPin,
+  getMongoStatus
+} from './mongo.js';
 import QRCode from 'qrcode';
 
 // Valid state transitions defined by specification Page 8
@@ -34,7 +42,7 @@ export class GameEngine {
     this.failedPinAttempts = new Map(); // ip -> { count, lockedUntil }
   }
 
-  // Rate-limiting helper for host PIN attempts
+  // Rate-limiting helper for host PIN attempts (also accepts PINs from chillaxgaminghub users/settings)
   verifyHostPin(ip, inputPin, hostPin = '1234') {
     const now = Date.now();
     const attempts = this.failedPinAttempts.get(ip) || { count: 0, lockedUntil: 0 };
@@ -44,7 +52,8 @@ export class GameEngine {
       return { success: false, error: `Too many failed attempts. Try again in ${waitSeconds}s.` };
     }
 
-    if (inputPin !== hostPin) {
+    const isPinValid = (inputPin === hostPin) || isValidHubPin(inputPin);
+    if (!isPinValid) {
       attempts.count += 1;
       if (attempts.count >= 5) {
         attempts.lockedUntil = now + 60000; // 1 minute lockout
@@ -55,6 +64,22 @@ export class GameEngine {
 
     this.failedPinAttempts.delete(ip);
     return { success: true };
+  }
+
+  // Write-through sync helpers to MongoDB `chillaxgaminghub`
+  syncSessionToMongo(sessionId) {
+    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (row) syncRecordToMongo('sessions', row);
+  }
+
+  syncRoundToMongo(roundId) {
+    const row = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+    if (row) syncRecordToMongo('rounds', row);
+  }
+
+  syncEntryToMongo(entryId) {
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
+    if (row) syncRecordToMongo('entries', row);
   }
 
   // Compute real-time house treasury & profit reserve telemetry for dynamic multiplier gating
@@ -342,7 +367,8 @@ export class GameEngine {
         cancelReason: currentRound.cancel_reason
       } : null,
       tvConnected: Boolean(session.tv_connected),
-      tvPairingCode: session.tv_pairing_code
+      tvPairingCode: session.tv_pairing_code,
+      mongoStatus: getMongoStatus()
     };
   }
 
@@ -389,6 +415,8 @@ export class GameEngine {
       VALUES (?, ?, 1, 'REGISTRATION_OPEN', ?, ?, ?)
     `).run(roundId, sessionId, prizeId, prizeObj ? JSON.stringify(prizeObj) : null, createdAt);
 
+    this.syncSessionToMongo(sessionId);
+    this.syncRoundToMongo(roundId);
     logAudit(sessionId, 'HOST', 'host_default', 'SESSION_CREATED', { shortCode, numberMin, numberMax });
 
     // Generate QR code data URL for easy mobile scanning
@@ -412,7 +440,7 @@ export class GameEngine {
   }
 
   // Pair TV to session using 4-digit pairing code or direct short code
-  pairTv(pairingCodeOrShortCode) {
+  pairTv(pairingCodeOrShortCode, tvId = null) {
     const code = String(pairingCodeOrShortCode).trim().toUpperCase();
     let session = db.prepare('SELECT * FROM sessions WHERE tv_pairing_code = ? OR short_code = ?').get(code, code);
 
@@ -421,7 +449,11 @@ export class GameEngine {
     }
 
     db.prepare('UPDATE sessions SET tv_connected = 1 WHERE id = ?').run(session.id);
-    logAudit(session.id, 'TV', 'tv_display', 'TV_PAIRED', { code });
+    this.syncSessionToMongo(session.id);
+    if (tvId) {
+      updateHubTvStatus(tvId, { lastHeartbeat: new Date().toISOString(), spinSessionId: session.id });
+    }
+    logAudit(session.id, 'TV', 'tv_display', 'TV_PAIRED', { code, tvId });
 
     this.broadcastSessionState(session.id);
     return { success: true, sessionId: session.id, shortCode: session.short_code };
@@ -488,6 +520,7 @@ export class GameEngine {
             db.prepare(`
               UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ? WHERE id = ?
             `).run(cleanBetAmount, cleanPayoutAmount, cleanNickname, existingPlayerEntry.id);
+            this.syncEntryToMongo(existingPlayerEntry.id);
             this.broadcastSessionState(sessionId);
             return {
               success: true,
@@ -510,22 +543,25 @@ export class GameEngine {
         }
         // Change player's number: delete previous claim and insert new claim atomically
         db.exec('BEGIN TRANSACTION;');
+        let newEntryId = null;
         try {
           db.prepare(`
             DELETE FROM entries WHERE round_id = ? AND player_token = ?
           `).run(currentRound.id, playerToken);
 
-          const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
+          newEntryId = 'ent_' + crypto.randomBytes(6).toString('hex');
           db.prepare(`
             INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-          `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+          `).run(newEntryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
 
           db.exec('COMMIT;');
         } catch (txErr) {
           db.exec('ROLLBACK;');
           throw txErr;
         }
+        deleteRecordFromMongo('entries', existingPlayerEntry.id);
+        if (newEntryId) this.syncEntryToMongo(newEntryId);
       } else {
         // Fresh claim
         const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
@@ -533,6 +569,7 @@ export class GameEngine {
           INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
         `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+        this.syncEntryToMongo(entryId);
       }
 
       logAudit(sessionId, 'PLAYER', playerToken, 'NUMBER_CLAIMED', {
@@ -635,6 +672,7 @@ export class GameEngine {
         INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
       `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+      this.syncEntryToMongo(entryId);
 
       logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_CLAIMED', {
         number: num,
@@ -700,6 +738,7 @@ export class GameEngine {
     }
 
     db.prepare('DELETE FROM entries WHERE id = ?').run(existingEntry.id);
+    deleteRecordFromMongo('entries', existingEntry.id);
 
     logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_UNCLAIMED', {
       number: num,
@@ -728,6 +767,8 @@ export class GameEngine {
 
     db.prepare(`UPDATE rounds SET status = 'REGISTRATION_CLOSED' WHERE id = ?`).run(currentRound.id);
     db.prepare(`UPDATE sessions SET status = 'REGISTRATION_CLOSED' WHERE id = ?`).run(sessionId);
+    this.syncRoundToMongo(currentRound.id);
+    this.syncSessionToMongo(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'REGISTRATION_CLOSED', { roundId: currentRound.id });
 
@@ -751,6 +792,8 @@ export class GameEngine {
 
     db.prepare(`UPDATE rounds SET status = 'REGISTRATION_OPEN' WHERE id = ?`).run(currentRound.id);
     db.prepare(`UPDATE sessions SET status = 'REGISTRATION_OPEN' WHERE id = ?`).run(sessionId);
+    this.syncRoundToMongo(currentRound.id);
+    this.syncSessionToMongo(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'REGISTRATION_REOPENED', { roundId: currentRound.id });
     this.broadcastSessionState(sessionId);
@@ -822,6 +865,7 @@ export class GameEngine {
         const finalPayout = Math.round(Number(winningEntry.bet_amount) * appliedMultiplier * 100) / 100;
         db.prepare('UPDATE entries SET payout_amount = ? WHERE id = ?').run(finalPayout, winningEntry.id);
         winningEntry.payout_amount = finalPayout;
+        this.syncEntryToMongo(winningEntry.id);
       }
     } else if (winnerMode === 'GUARANTEED' && entries.length > 0) {
       // Party / guaranteed promo mode: selects among claimed numbers
@@ -851,6 +895,8 @@ export class GameEngine {
     `).run(winningNumber, winningEntry ? winningEntry.id : null, appliedMultiplier, now, idempotencyKey || 'spin_' + Date.now(), currentRound.id);
 
     db.prepare(`UPDATE sessions SET status = 'SPINNING' WHERE id = ?`).run(sessionId);
+    this.syncRoundToMongo(currentRound.id);
+    this.syncSessionToMongo(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'SPIN_STARTED', {
       roundId: currentRound.id,
@@ -879,6 +925,8 @@ export class GameEngine {
         const resultTime = new Date().toISOString();
         db.prepare(`UPDATE rounds SET status = 'RESULT', result_at = ? WHERE id = ?`).run(resultTime, currentRound.id);
         db.prepare(`UPDATE sessions SET status = 'RESULT' WHERE id = ?`).run(sessionId);
+        this.syncRoundToMongo(currentRound.id);
+        this.syncSessionToMongo(sessionId);
 
         // Fetch prize only if there is an active winning entry
         const prize = winningEntry
@@ -886,6 +934,21 @@ export class GameEngine {
               ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(activeRound.prize_id)
               : (activeRound.prize_snapshot_json ? JSON.parse(activeRound.prize_snapshot_json) : null))
           : null;
+
+        // Record round transaction in chillaxgaminghub.transactions
+        const roundTotalCollected = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
+        if (roundTotalCollected > 0 || winningEntry) {
+          recordHubTransaction({
+            sessionId,
+            roundId: currentRound.id,
+            roundNumber: currentRound.round_number,
+            customerName: winningEntry ? winningEntry.nickname : 'No Winner (House Retained)',
+            totalCollected: roundTotalCollected,
+            payoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
+            appliedMultiplier,
+            prizeName: roundPrize?.name || 'Spin & Win'
+          });
+        }
 
         logAudit(sessionId, 'SERVER', 'engine', 'SPIN_RESULT', {
           winningNumber,
@@ -948,7 +1011,12 @@ export class GameEngine {
         UPDATE entries SET bet_amount = 5, payout_amount = 7.5
         WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount < 5
       `).run(currentRound.id);
+      const updatedEntries = db.prepare('SELECT * FROM entries WHERE round_id = ?').all(currentRound.id);
+      for (const entry of updatedEntries) {
+        syncRecordToMongo('entries', entry);
+      }
     }
+    this.syncRoundToMongo(currentRound.id);
 
     logAudit(sessionId, 'HOST', 'host', 'ROUND_PRIZE_UPDATED', {
       roundId: currentRound.id,
@@ -965,6 +1033,7 @@ export class GameEngine {
     const validModes = ['TRUE_ODDS', 'GUARANTEED'];
     const chosenMode = validModes.includes(mode) ? mode : 'TRUE_ODDS';
     db.prepare('UPDATE sessions SET winner_mode = ? WHERE id = ?').run(chosenMode, sessionId);
+    this.syncSessionToMongo(sessionId);
     logAudit(sessionId, 'HOST', 'host', 'WINNER_MODE_CHANGED', { winnerMode: chosenMode });
     this.broadcastSessionState(sessionId);
     return { success: true, winnerMode: chosenMode };
@@ -1004,6 +1073,8 @@ export class GameEngine {
     `).run(roundId, sessionId, nextRoundNumber, selectedPrizeId, prizeObj ? JSON.stringify(prizeObj) : null, now);
 
     db.prepare(`UPDATE sessions SET status = 'REGISTRATION_OPEN' WHERE id = ?`).run(sessionId);
+    this.syncRoundToMongo(roundId);
+    this.syncSessionToMongo(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'ROUND_CREATED', { roundNumber: nextRoundNumber, prizeId: selectedPrizeId });
 
@@ -1022,6 +1093,8 @@ export class GameEngine {
     `).run(now, reason, roundId);
 
     db.prepare(`UPDATE sessions SET status = 'CANCELLED' WHERE id = ?`).run(sessionId);
+    this.syncRoundToMongo(roundId);
+    this.syncSessionToMongo(sessionId);
 
     logAudit(sessionId, 'HOST', 'host', 'ROUND_CANCELLED', { roundId, reason });
 
@@ -1051,6 +1124,9 @@ export class GameEngine {
       INSERT INTO redemptions (id, round_id, prize_id, redeemed_by, redeemed_at, status, notes)
       VALUES (?, ?, ?, ?, ?, 'REDEEMED', ?)
     `).run(redemptionId, roundId, round.prize_id || 'prize_default', redeemedBy, now, notes);
+
+    const redemptionRow = db.prepare('SELECT * FROM redemptions WHERE id = ?').get(redemptionId);
+    if (redemptionRow) syncRecordToMongo('redemptions', redemptionRow);
 
     logAudit(round.session_id, 'HOST', redeemedBy, 'PRIZE_REDEEMED', { roundId, notes });
 

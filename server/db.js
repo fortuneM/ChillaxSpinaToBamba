@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { syncRecordToMongo } from './mongo.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -162,9 +163,20 @@ if (countPrizes.c === 0) {
 
 export function logAudit(sessionId, actorType, actorId, action, metadata = {}) {
   const id = 'aud_' + Math.random().toString(36).substring(2, 10);
+  const timestamp = new Date().toISOString();
+  const metadataJson = JSON.stringify(metadata);
   const stmt = db.prepare(`
     INSERT INTO audit_events (id, session_id, actor_type, actor_id, action, timestamp, metadata_json)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(id, sessionId, actorType, actorId, action, new Date().toISOString(), JSON.stringify(metadata));
+  stmt.run(id, sessionId, actorType, actorId, action, timestamp, metadataJson);
+  syncRecordToMongo('audit_events', {
+    id,
+    session_id: sessionId,
+    actor_type: actorType,
+    actor_id: actorId,
+    action,
+    timestamp,
+    metadata_json: metadataJson
+  });
 }

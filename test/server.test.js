@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { db } from '../server/db.js';
 import { GameEngine } from '../server/gameEngine.js';
+import { buildMongoUri, getMongoStatus, hubCache } from '../server/mongo.js';
 
 // Mock Socket.io for testing
 class MockSocketIO {
@@ -268,7 +269,33 @@ async function runTests() {
   assert(postSpinStats.netProfit >= 10, 'House must remain in positive net profit after spin');
   console.log('  ✅ Smart Profit-Protected Cash Multiplier (1.5x / 2x / 3x) passed');
 
-  console.log('\n🎉 ALL 11 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 12. MongoDB `chillaxgaminghub` Integration Verification
+  console.log('Test 12: MongoDB "chillaxgaminghub" Integration');
+  const builtUri = buildMongoUri({
+    username: 'chillax_admin',
+    password: 'MySecret#Password',
+    clusterHost: 'cluster0.q1kwbvb.mongodb.net',
+    dbName: 'chillaxgaminghub'
+  });
+  assert(
+    builtUri.includes('mongodb+srv://chillax_admin:MySecret%23Password@cluster0.q1kwbvb.mongodb.net/chillaxgaminghub'),
+    'URI builder must properly encode credentials and target chillaxgaminghub on cluster0.q1kwbvb.mongodb.net'
+  );
+
+  const mStatus = getMongoStatus();
+  assert.strictEqual(mStatus.dbName, 'chillaxgaminghub', 'Default database name must be chillaxgaminghub');
+  assert.strictEqual(mStatus.clusterHost, 'cluster0.q1kwbvb.mongodb.net', 'Cluster host must be cluster0.q1kwbvb.mongodb.net');
+  assert.strictEqual(mStatus.permanentDb, true, 'MongoDB must be configured as default permanent DB');
+  assert(snapshotAfterCashBets.mongoStatus, 'Session snapshot must expose real-time mongoStatus');
+
+  // Verify hub user PIN integration
+  hubCache.users.push({ id: 'usr_test_hub', username: 'nexus_mgr', pin: '7878' });
+  const hubPinRes = engine.verifyHostPin('127.0.0.9', '7878');
+  assert.strictEqual(hubPinRes.success, true, 'Host PIN verification must accept PINs from chillaxgaminghub.users');
+  console.log('  ✅ MongoDB "chillaxgaminghub" integration passed');
+
+  console.log('\n🎉 ALL 12 TEST SUITES PASSED FLAWLESSLY!\n');
+  process.exit(0);
 }
 
 runTests().catch(err => {

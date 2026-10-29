@@ -2,8 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getSocket } from '../utils/socket';
 import { 
   Play, Lock, Unlock, RotateCcw, Award, CheckCircle2, 
-  XCircle, Tv, AlertCircle, History, Shield, Users, RefreshCw,
-  UserPlus, Trash2, Check
+  XCircle, History, Shield, Users, RefreshCw,
+  UserPlus, Trash2, Check, Database
 } from 'lucide-react';
 
 export function HostView() {
@@ -25,16 +25,82 @@ export function HostView() {
   const [selectedPickNum, setSelectedPickNum] = useState(null);
   const [hostPickFeedback, setHostPickFeedback] = useState('');
   const [isAssigningPick, setIsAssigningPick] = useState(false);
+  const [mongoStatus, setMongoStatus] = useState(null);
+  const [showMongoModal, setShowMongoModal] = useState(false);
+  const [mongoUsername, setMongoUsername] = useState('');
+  const [mongoPassword, setMongoPassword] = useState('');
+  const [mongoUriInput, setMongoUriInput] = useState('');
+  const [mongoConnecting, setMongoConnecting] = useState(false);
+  const [mongoFeedback, setMongoFeedback] = useState('');
   const walkInInputRef = useRef(null);
 
   // Check stored PIN on load
   useEffect(() => {
     fetchPrizes();
+    fetchMongoStatus();
     const storedPin = localStorage.getItem('chillax_host_pin');
     if (storedPin) {
       verifyPin(storedPin);
     }
   }, []);
+
+  const fetchMongoStatus = async () => {
+    try {
+      const res = await fetch('/api/mongodb/status');
+      if (res.ok) {
+        const data = await res.json();
+        setMongoStatus(data);
+      }
+    } catch {}
+  };
+
+  const handleConnectMongo = async (e) => {
+    e.preventDefault();
+    setMongoConnecting(true);
+    setMongoFeedback('');
+    setActionError('');
+    try {
+      const res = await fetch('/api/mongodb/connect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-host-pin': pin || '1234'
+        },
+        body: JSON.stringify({
+          uri: mongoUriInput.trim() || undefined,
+          username: mongoUsername.trim() || undefined,
+          password: mongoPassword || undefined,
+          clusterHost: 'cluster0.q1kwbvb.mongodb.net',
+          dbName: 'chillaxgaminghub'
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setMongoStatus(data.status);
+        setMongoFeedback(`✅ Connected & synced with "${data.status?.dbName || 'chillaxgaminghub'}"!`);
+        setMongoPassword('');
+        setTimeout(() => {
+          setShowMongoModal(false);
+          setMongoFeedback('');
+        }, 1200);
+      } else {
+        setMongoFeedback(`❌ ${data.error || 'Failed to connect to MongoDB Atlas.'}`);
+      }
+    } catch (err) {
+      setMongoFeedback(`❌ Network error: ${err.message}`);
+    } finally {
+      setMongoConnecting(false);
+    }
+  };
+
+  const handleManualMongoSync = async () => {
+    setMongoConnecting(true);
+    const data = await apiRequest('/api/mongodb/sync', 'POST', {});
+    setMongoConnecting(false);
+    if (data?.status) {
+      setMongoStatus(data.status);
+    }
+  };
 
   const fetchPrizes = async () => {
     try {
@@ -98,11 +164,20 @@ export function HostView() {
 
     const handleState = (newState) => {
       setSession(newState);
+      if (newState?.mongoStatus) {
+        setMongoStatus(newState.mongoStatus);
+      }
+    };
+
+    const handleMongoStatus = (status) => {
+      setMongoStatus(status);
     };
 
     socket.on('session:state', handleState);
+    socket.on('mongodb:status', handleMongoStatus);
     return () => {
       socket.off('session:state', handleState);
+      socket.off('mongodb:status', handleMongoStatus);
     };
   }, [session?.sessionId]);
 
@@ -406,6 +481,16 @@ export function HostView() {
           <span className="host-code-badge">CODE: {session.shortCode}</span>
         </div>
         <div className="host-header-actions">
+          <button
+            onClick={() => setShowMongoModal(true)}
+            className={`host-mongo-pill ${mongoStatus?.connected ? 'connected' : 'disconnected'}`}
+            title="MongoDB Atlas chillaxgaminghub Connection"
+          >
+            <Database size={14} />
+            <span>
+              {mongoStatus?.connected ? 'chillaxgaminghub' : 'Connect MongoDB'}
+            </span>
+          </button>
           <button onClick={handleLoadHistory} className="host-icon-btn" title="View History">
             <History size={18} />
           </button>
@@ -421,15 +506,8 @@ export function HostView() {
 
       {actionError && <div className="host-error-alert">{actionError}</div>}
 
-      {/* TV Connection & Status Pod */}
+      {/* Status Pod */}
       <div className="host-status-pod">
-        <div className="status-pod-item">
-          <span className="pod-label">TV SCREEN</span>
-          <span className={`pod-value ${session.tvConnected ? 'text-green' : 'text-amber'}`}>
-            <Tv size={16} className="inline-icon" />
-            {session.tvConnected ? 'Connected' : `Pairing Code: ${session.tvPairingCode}`}
-          </span>
-        </div>
         <div className="status-pod-item">
           <span className="pod-label">STATUS</span>
           <span className="pod-value text-cyan">{status.replace('_', ' ')}</span>
@@ -902,6 +980,43 @@ export function HostView() {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MongoDB Atlas chillaxgaminghub Connection Modal */}
+      {showMongoModal && (
+        <div className="host-modal-overlay">
+          <div className="host-modal-card">
+            <div className="modal-header">
+              <h3>🗄️ Default Permanent DB: chillaxgaminghub</h3>
+              <button onClick={() => setShowMongoModal(false)} className="modal-close-btn">✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="mongo-status-summary">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-xs text-muted">CLUSTER: cluster0.q1kwbvb.mongodb.net</span>
+                  <span className={`badge-${mongoStatus?.connected ? 'redeemed' : 'pending'}`}>
+                    {mongoStatus?.connected ? '● Permanent DB Active' : '○ Reconnecting...'}
+                  </span>
+                </div>
+                <div className="mongo-sync-metrics">
+                  <span>Spin Sessions: <strong>{mongoStatus?.collectionCounts?.spin_sessions || 0}</strong></span>
+                  <span>Rounds: <strong>{mongoStatus?.collectionCounts?.spin_rounds || 0}</strong></span>
+                  <span>Entries: <strong>{mongoStatus?.collectionCounts?.spin_entries || 0}</strong></span>
+                  <span>Redemptions: <strong>{mongoStatus?.collectionCounts?.spin_redemptions || 0}</strong></span>
+                </div>
+                <button
+                  type="button"
+                  disabled={mongoConnecting}
+                  onClick={handleManualMongoSync}
+                  className="arcade-btn-primary w-full mt-2"
+                >
+                  <RefreshCw size={14} className="inline-icon" />{' '}
+                  {mongoConnecting ? 'Syncing chillaxgaminghub...' : 'Sync Now with chillaxgaminghub'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
