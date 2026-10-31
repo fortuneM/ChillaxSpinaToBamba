@@ -19,7 +19,7 @@ export function App() {
   if (currentPath.startsWith('/tv')) {
     return <TvView />;
   }
-  if (currentPath.startsWith('/host')) {
+  if (currentPath.startsWith('/host') || currentPath.startsWith('/login')) {
     return <HostView />;
   }
   if (currentPath.startsWith('/join')) {

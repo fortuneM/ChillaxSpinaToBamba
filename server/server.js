@@ -11,7 +11,11 @@ import {
   syncWithChillaxGamingHub,
   getMongoStatus,
   buildMongoUri,
-  saveMongoUriToEnv
+  saveMongoUriToEnv,
+  authenticateHubUser,
+  registerHubUserAndShop,
+  resolveHubUserAndShopById,
+  hubCache
 } from './mongo.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,8 +43,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// Host auth middleware helper
+// Host auth middleware helper (supports Chillax Gaming App user session OR Host PIN)
 function requireHostAuth(req, res, next) {
+  const userId = req.headers['x-host-user-id'] || req.body?.hostUserId || req.query?.hostUserId;
+  if (userId && (hubCache.users || []).some((u) => u.id === userId)) {
+    return next();
+  }
   const pin = req.headers['x-host-pin'] || req.body?.hostPin || req.query?.hostPin;
   const clientIp = req.ip || req.socket.remoteAddress;
   const verification = engine.verifyHostPin(clientIp, pin || '', '1234');
@@ -150,14 +158,113 @@ app.post('/api/host/verify-pin', (req, res) => {
   res.json({ success: true, message: 'Host authenticated successfully.' });
 });
 
-// POST /api/sessions: Create new game session (Host)
+// -------------------------------------------------------------
+// Chillax Gaming App Synced Login & Registration (chillaxgaminghub)
+// -------------------------------------------------------------
+
+// POST /api/auth/login: Authenticate with Chillax Gaming App username/email & password
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const authRes = await authenticateHubUser({ usernameOrEmail: username, password });
+    if (!authRes.success) {
+      return res.status(authRes.status || 401).json({
+        success: false,
+        error: authRes.error || 'Invalid username or password.'
+      });
+    }
+
+    // Automatically ensure or load the Spin & Win session using the linked shop's shopCode
+    const sessionSnapshot = await engine.ensureShopSession({
+      shop: authRes.shop,
+      user: authRes.user
+    });
+
+    res.json({
+      success: true,
+      user: authRes.user,
+      shop: authRes.shop,
+      session: sessionSnapshot
+    });
+  } catch (err) {
+    console.error('[Auth] Login error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Login failed: ' + err.message
+    });
+  }
+});
+
+// POST /api/auth/register: Register new shop & owner account in chillaxgaminghub
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { name, username, email, password, shopName } = req.body;
+    const regRes = await registerHubUserAndShop({ name, username, email, password, shopName });
+    if (!regRes.success) {
+      return res.status(regRes.status || 400).json({
+        success: false,
+        error: regRes.error || 'Registration failed.'
+      });
+    }
+
+    const sessionSnapshot = await engine.ensureShopSession({
+      shop: regRes.shop,
+      user: regRes.user
+    });
+
+    res.status(201).json({
+      success: true,
+      user: regRes.user,
+      shop: regRes.shop,
+      session: sessionSnapshot
+    });
+  } catch (err) {
+    console.error('[Auth] Register error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Registration failed: ' + err.message
+    });
+  }
+});
+
+// GET /api/auth/me: Restore & verify logged-in user, linked shopCode, and active session
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    const userId = req.query?.userId || req.headers['x-host-user-id'];
+    const username = req.query?.username;
+    const resolved = await resolveHubUserAndShopById({ userId, username });
+    if (!resolved) {
+      return res.status(404).json({ success: false, error: 'User session not found.' });
+    }
+
+    const sessionSnapshot = await engine.ensureShopSession({
+      shop: resolved.shop,
+      user: resolved.user
+    });
+
+    res.json({
+      success: true,
+      user: resolved.user,
+      shop: resolved.shop,
+      session: sessionSnapshot
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Failed to verify user session: ' + err.message });
+  }
+});
+
+// POST /api/sessions: Create new game session (Host) using linked shop's shopCode
 app.post('/api/sessions', requireHostAuth, async (req, res) => {
   try {
-    const { numberMin = 1, numberMax = 20, defaultPrizeId } = req.body;
+    const { numberMin = 1, numberMax = 20, defaultPrizeId, shopCode, shopId, shopName, hostId } = req.body;
     const sessionData = await engine.createSession({
       numberMin: parseInt(numberMin, 10) || 1,
       numberMax: parseInt(numberMax, 10) || 20,
-      defaultPrizeId
+      defaultPrizeId,
+      shopCode: shopCode || null,
+      shopId: shopId || null,
+      shopName: shopName || null,
+      hostId: hostId || req.headers['x-host-user-id'] || 'host_default'
     });
     res.status(201).json(sessionData);
   } catch (err) {
@@ -166,13 +273,28 @@ app.post('/api/sessions', requireHostAuth, async (req, res) => {
   }
 });
 
-// GET /api/sessions/find/:code: Lookup session by shortCode or pairing code
-app.get('/api/sessions/find/:code', (req, res) => {
+// GET /api/sessions/find/:code: Lookup session by Shop Code (CHX-XXXX), shortCode, or pairing code
+app.get('/api/sessions/find/:code', async (req, res) => {
   const code = req.params.code.trim().toUpperCase();
-  const session = db.prepare('SELECT * FROM sessions WHERE short_code = ? OR tv_pairing_code = ?').get(code, code);
+  let session = engine.findSessionByCode(code);
+
+  // If no session exists yet in SQLite, check if the code matches a shopCode in chillaxgaminghub.shops
   if (!session) {
-    return res.status(404).json({ error: 'Session not found for code: ' + code });
+    const cleanAlnum = code.replace(/[^A-Z0-9]/g, '');
+    const withChx = /^\d{3,5}$/.test(code) ? `CHX-${code}` : null;
+    const matchedShop = (hubCache.shops || []).find((s) => {
+      const sc = String(s.shopCode || '').toUpperCase();
+      return sc === code || sc === withChx || sc.replace(/[^A-Z0-9]/g, '') === cleanAlnum;
+    });
+
+    if (matchedShop) {
+      const snapshot = await engine.ensureShopSession({ shop: matchedShop });
+      if (snapshot) return res.json(snapshot);
+    }
+
+    return res.status(404).json({ error: 'Session not found for shop code: ' + code });
   }
+
   const snapshot = engine.getSessionSnapshot(session.id);
   res.json(snapshot);
 });

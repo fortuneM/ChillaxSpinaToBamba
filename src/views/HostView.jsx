@@ -3,12 +3,39 @@ import { getSocket } from '../utils/socket';
 import { 
   Play, Lock, Unlock, RotateCcw, Award, CheckCircle2, 
   XCircle, History, Shield, Users, RefreshCw,
-  UserPlus, Trash2, Check, Database, Eye, EyeOff
+  UserPlus, Trash2, Check, Database, Eye, EyeOff,
+  Store, User, Mail, LogOut, ArrowRight
 } from 'lucide-react';
 
 export function HostView() {
-  const [pin, setPin] = useState(localStorage.getItem('chillax_host_pin') || '');
+  const [pin, setPin] = useState(localStorage.getItem('chillax_host_pin') || '1234');
+  const [authUser, setAuthUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('chillax_host_user') || localStorage.getItem('chillax_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [linkedShop, setLinkedShop] = useState(() => {
+    try {
+      const saved = localStorage.getItem('chillax_host_shop') || localStorage.getItem('chillax_shop');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [regShopName, setRegShopName] = useState('');
+  const [regName, setRegName] = useState('');
+  const [regUsername, setRegUsername] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   const [session, setSession] = useState(null);
   const [prizes, setPrizes] = useState([]);
@@ -45,15 +72,140 @@ export function HostView() {
     });
   };
 
-  // Check stored PIN on load
+  // Check stored Chillax Gaming App user session on load
   useEffect(() => {
     fetchPrizes();
     fetchMongoStatus();
-    const storedPin = localStorage.getItem('chillax_host_pin');
-    if (storedPin) {
-      verifyPin(storedPin);
+    if (authUser?.id || authUser?.username) {
+      restoreUserSession(authUser);
     }
   }, []);
+
+  const applyAuthenticatedShopSession = (data) => {
+    if (data?.user) {
+      setAuthUser(data.user);
+      setPin(data.user.pin || data?.shop?.adminPin || '1234');
+      localStorage.setItem('chillax_host_user', JSON.stringify(data.user));
+      localStorage.setItem('chillax_user', JSON.stringify(data.user));
+      localStorage.setItem('chillax_host_pin', data.user.pin || data?.shop?.adminPin || '1234');
+    }
+    if (data?.shop) {
+      setLinkedShop(data.shop);
+      localStorage.setItem('chillax_host_shop', JSON.stringify(data.shop));
+      localStorage.setItem('chillax_shop', JSON.stringify(data.shop));
+    }
+    if (data?.session) {
+      setSession(data.session);
+      localStorage.setItem('chillax_host_session_id', data.session.sessionId);
+    }
+    setIsAuthenticated(true);
+  };
+
+  const restoreUserSession = async (savedUser) => {
+    setAuthLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (savedUser?.id) params.set('userId', savedUser.id);
+      if (savedUser?.username) params.set('username', savedUser.username);
+      const res = await fetch(`/api/auth/me?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success) {
+          applyAuthenticatedShopSession(data);
+          setAuthLoading(false);
+          return;
+        }
+      }
+      // If saved user was not found, clear stale session
+      setIsAuthenticated(false);
+    } catch {
+      // Keep local auth state if offline
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleShopLogin = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: loginUsername.trim(),
+          password: loginPassword
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        applyAuthenticatedShopSession(data);
+        setLoginPassword('');
+      } else {
+        setAuthError(data.error || 'Invalid username or password.');
+      }
+    } catch {
+      setAuthError('Network error connecting to Chillax Gaming Hub database.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleShopRegister = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    if (!regShopName.trim()) {
+      setAuthError('Please enter your Shop or Gaming Center name.');
+      return;
+    }
+    if (!regUsername.trim()) {
+      setAuthError('Please enter a username.');
+      return;
+    }
+    if (regPassword.length < 4) {
+      setAuthError('Password must be at least 4 characters.');
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shopName: regShopName.trim(),
+          name: regName.trim() || regUsername.trim(),
+          username: regUsername.trim().toLowerCase(),
+          email: regEmail.trim(),
+          password: regPassword
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        applyAuthenticatedShopSession(data);
+        setRegPassword('');
+      } else {
+        setAuthError(data.error || 'Registration failed.');
+      }
+    } catch {
+      setAuthError('Network error connecting to Chillax Gaming Hub database.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setAuthUser(null);
+    setLinkedShop(null);
+    setSession(null);
+    localStorage.removeItem('chillax_host_user');
+    localStorage.removeItem('chillax_host_shop');
+    localStorage.removeItem('chillax_host_session_id');
+    localStorage.removeItem('chillax_user');
+    localStorage.removeItem('chillax_shop');
+  };
 
   const fetchMongoStatus = async () => {
     try {
@@ -199,7 +351,8 @@ export function HostView() {
         method,
         headers: {
           'Content-Type': 'application/json',
-          'x-host-pin': pin
+          'x-host-pin': authUser?.pin || pin || '1234',
+          'x-host-user-id': authUser?.id || ''
         },
         body: method !== 'GET' ? JSON.stringify(body) : undefined
       });
@@ -215,13 +368,17 @@ export function HostView() {
     }
   };
 
-  // Create new session
+  // Create new session using the linked shop's shopCode
   const handleCreateSession = async () => {
     setLoading(true);
     const data = await apiRequest('/api/sessions', 'POST', {
       numberMin: parseInt(numberMin, 10),
       numberMax: parseInt(numberMax, 10),
-      defaultPrizeId: selectedPrizeId
+      defaultPrizeId: selectedPrizeId,
+      shopCode: linkedShop?.shopCode || null,
+      shopId: linkedShop?.id || null,
+      shopName: linkedShop?.name || null,
+      hostId: authUser?.id || 'host_default'
     });
     setLoading(false);
     if (data?.sessionId) {
@@ -363,41 +520,213 @@ export function HostView() {
     }
   };
 
-  // Authentication View
+  // Chillax Gaming App Database-Synced Login & Registration View
   if (!isAuthenticated) {
     return (
       <div className="host-auth-container">
         <div className="host-auth-card">
           <div className="host-badge">
-            <Shield size={32} className="text-cyan" />
+            <Store size={30} className="text-cyan" />
           </div>
-          <h1 className="host-title">Host Controller Login</h1>
-          <p className="host-subtitle">Authorized gaming center staff PIN required.</p>
+          <h1 className="host-title">Chillax Gaming Hub Login</h1>
+          <p className="host-subtitle">
+            Sign in with your Chillax Gaming App account. Your Shop Code loads automatically from your linked shop.
+          </p>
 
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              verifyPin(pin);
-            }}
-            className="host-pin-form"
-          >
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={8}
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              placeholder="Enter Host PIN (Default: 1234)"
-              className="host-pin-input"
-              autoFocus
-            />
-            <button type="submit" className="arcade-btn-primary w-full">
-              Authenticate
+          {/* Mode Tabs */}
+          <div className="host-auth-tabs">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('login');
+                setAuthError('');
+              }}
+              className={`host-auth-tab ${authMode === 'login' ? 'active' : ''}`}
+            >
+              Shop Sign In
             </button>
-            {authError && <div className="host-error-alert">{authError}</div>}
-          </form>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('register');
+                setAuthError('');
+              }}
+              className={`host-auth-tab ${authMode === 'register' ? 'active' : ''}`}
+            >
+              <Store size={14} className="inline-icon" /> Register New Shop
+            </button>
+          </div>
+
+          {authError && <div className="host-error-alert mb-3">{authError}</div>}
+
+          {authMode === 'login' ? (
+            <form onSubmit={handleShopLogin} className="host-login-form">
+              <div className="host-login-field">
+                <label htmlFor="host-login-username">Shop Username or Email</label>
+                <div className="host-input-with-icon">
+                  <User size={16} className="host-input-icon" />
+                  <input
+                    id="host-login-username"
+                    type="text"
+                    value={loginUsername}
+                    onChange={(e) => {
+                      setLoginUsername(e.target.value);
+                      if (authError) setAuthError('');
+                    }}
+                    placeholder="e.g. fortuinem, alexgamer, or admin"
+                    autoComplete="username"
+                    autoFocus
+                    required
+                    className="host-text-input"
+                  />
+                </div>
+              </div>
+
+              <div className="host-login-field">
+                <label htmlFor="host-login-password">Password</label>
+                <div className="host-input-with-icon">
+                  <Lock size={16} className="host-input-icon" />
+                  <input
+                    id="host-login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={loginPassword}
+                    onChange={(e) => {
+                      setLoginPassword(e.target.value);
+                      if (authError) setAuthError('');
+                    }}
+                    placeholder="••••••••"
+                    autoComplete="current-password"
+                    required
+                    className="host-text-input pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="host-pwd-toggle"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={authLoading || !loginUsername.trim() || !loginPassword}
+                className="arcade-btn-primary w-full mt-2"
+              >
+                {authLoading ? (
+                  'Signing In & Syncing Shop...'
+                ) : (
+                  <>
+                    Sign In to Shop <ArrowRight size={16} className="inline-icon" />
+                  </>
+                )}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleShopRegister} className="host-login-form">
+              <div className="host-login-field">
+                <label htmlFor="host-reg-shop">Shop / Gaming Center Name *</label>
+                <div className="host-input-with-icon">
+                  <Store size={16} className="host-input-icon" />
+                  <input
+                    id="host-reg-shop"
+                    type="text"
+                    value={regShopName}
+                    onChange={(e) => {
+                      setRegShopName(e.target.value);
+                      if (authError) setAuthError('');
+                    }}
+                    placeholder="e.g. Apex Gaming Lounge"
+                    required
+                    className="host-text-input"
+                  />
+                </div>
+              </div>
+
+              <div className="host-login-field">
+                <label htmlFor="host-reg-name">Owner / Manager Name</label>
+                <div className="host-input-with-icon">
+                  <User size={16} className="host-input-icon" />
+                  <input
+                    id="host-reg-name"
+                    type="text"
+                    value={regName}
+                    onChange={(e) => setRegName(e.target.value)}
+                    placeholder="e.g. Thabelo Dumani"
+                    className="host-text-input"
+                  />
+                </div>
+              </div>
+
+              <div className="host-login-grid-2">
+                <div className="host-login-field">
+                  <label htmlFor="host-reg-username">Username *</label>
+                  <input
+                    id="host-reg-username"
+                    type="text"
+                    value={regUsername}
+                    onChange={(e) => {
+                      setRegUsername(e.target.value);
+                      if (authError) setAuthError('');
+                    }}
+                    placeholder="apexowner"
+                    required
+                    className="host-text-input no-left-icon"
+                  />
+                </div>
+                <div className="host-login-field">
+                  <label htmlFor="host-reg-email">Email (Optional)</label>
+                  <input
+                    id="host-reg-email"
+                    type="email"
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    placeholder="owner@hub.co.zw"
+                    className="host-text-input no-left-icon"
+                  />
+                </div>
+              </div>
+
+              <div className="host-login-field">
+                <label htmlFor="host-reg-password">Password *</label>
+                <div className="host-input-with-icon">
+                  <Lock size={16} className="host-input-icon" />
+                  <input
+                    id="host-reg-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={regPassword}
+                    onChange={(e) => {
+                      setRegPassword(e.target.value);
+                      if (authError) setAuthError('');
+                    }}
+                    placeholder="At least 4 characters"
+                    required
+                    className="host-text-input pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="host-pwd-toggle"
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={authLoading || !regShopName.trim() || !regUsername.trim() || !regPassword}
+                className="arcade-btn-primary w-full mt-2"
+              >
+                {authLoading ? 'Creating Shop & Code...' : 'Create Shop & Generate Shop Code'}
+              </button>
+            </form>
+          )}
+
           <div className="host-help-tip">
-            Default manager PIN is <code>1234</code>. Failed attempts are rate-limited.
+            Synced with <code>chillaxgaminghub</code> • Same credentials &amp; Shop Code as your Chillax Gaming App.
           </div>
         </div>
       </div>
@@ -409,15 +738,23 @@ export function HostView() {
     return (
       <div className="host-dashboard">
         <div className="host-header">
-          <h2>Host Control Center</h2>
-          <button onClick={() => setIsAuthenticated(false)} className="host-btn-logout">
-            Lock
+          <div className="host-brand-title">
+            <span className="text-cyan font-bold">{linkedShop?.name || 'CHILLAX'}</span>
+            {linkedShop?.shopCode && (
+              <span className="host-code-badge">SHOP CODE: {linkedShop.shopCode}</span>
+            )}
+          </div>
+          <button onClick={handleLogout} className="host-btn-logout">
+            <LogOut size={14} className="inline-icon" /> Sign Out
           </button>
         </div>
 
         <div className="host-setup-card">
-          <h3>Create New Game Session</h3>
-          <p className="text-muted">Configure the wheel numbers and prize for the opening round.</p>
+          <h3>Launch Spin &amp; Win for {linkedShop?.name || 'Your Shop'}</h3>
+          <p className="text-muted">
+            Your session will use your linked Shop Code:{' '}
+            <strong className="text-cyan">{linkedShop?.shopCode || 'CHX-XXXX'}</strong>
+          </p>
 
           <div className="host-field-group">
             <label>Number Range</label>
@@ -483,15 +820,25 @@ export function HostView() {
   const isSpinning = status === 'SPINNING';
   const isResult = status === 'RESULT';
 
+  const activeShopCode = linkedShop?.shopCode || session.shopCode || session.shortCode;
+  const activeShopName = linkedShop?.name || session.shopName || 'CHILLAX';
+
   return (
     <div className="host-dashboard">
       {/* Top Controller Bar */}
       <div className="host-header">
         <div className="host-brand-title">
-          <span className="text-cyan font-bold">CHILLAX</span> HOST
-          <span className="host-code-badge">CODE: {session.shortCode}</span>
+          <span className="text-cyan font-bold">{activeShopName.toUpperCase()}</span>
+          <span className="host-code-badge" title="Linked Shop Code from Chillax Gaming App">
+            SHOP CODE: {activeShopCode}
+          </span>
         </div>
         <div className="host-header-actions">
+          {authUser?.username && (
+            <span className="host-user-pill" title={`Logged in as ${authUser.name || authUser.username}`}>
+              <User size={13} /> {authUser.username}
+            </span>
+          )}
           <button
             onClick={() => setShowMongoModal(true)}
             className={`host-mongo-pill ${mongoStatus?.connected ? 'connected' : 'disconnected'}`}
@@ -511,6 +858,13 @@ export function HostView() {
             title="Refresh State"
           >
             <RefreshCw size={18} />
+          </button>
+          <button
+            onClick={handleLogout}
+            className="host-icon-btn text-danger"
+            title="Sign Out of Shop"
+          >
+            <LogOut size={18} />
           </button>
         </div>
       </div>

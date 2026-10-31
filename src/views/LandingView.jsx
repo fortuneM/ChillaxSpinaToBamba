@@ -39,10 +39,10 @@ export function LandingView() {
             </div>
             <h3>Host Phone Controller</h3>
             <p>
-              Staff portal with host PIN authentication (1234), session creation, entry locking, spin trigger, and prize redemption.
+              Sign in with your Chillax Gaming App account. Automatically syncs your linked Shop Code, entries, spin trigger, and prize redemptions.
             </p>
             <a href="/host" className="arcade-btn-warning w-full">
-              Open Host Controller (/host)
+              Shop Sign In &amp; Host Controller (/host)
             </a>
           </div>
 

@@ -196,14 +196,14 @@ export function TvView() {
             }}
             className="tv-pairing-form"
           >
-            <label className="tv-input-label">Enter 4-Digit TV Pairing Code or 5-Letter Game Code</label>
+            <label className="tv-input-label">Enter Linked Shop Code (e.g. CHX-2855) or Pairing Code</label>
             <div className="tv-input-row">
               <input
                 type="text"
-                maxLength={6}
+                maxLength={12}
                 value={pairingCodeInput}
                 onChange={(e) => setPairingCodeInput(e.target.value.toUpperCase())}
-                placeholder="e.g. 4821 or K7P4Q"
+                placeholder="e.g. CHX-2855"
                 className="tv-pairing-input"
                 autoFocus
               />
@@ -215,7 +215,7 @@ export function TvView() {
           </form>
 
           <div className="tv-pairing-tips">
-            <p>💡 <strong>Tip for Host:</strong> Start a session on your phone at <code>/host</code> and locate the TV pairing code.</p>
+            <p>💡 <strong>Tip for Host:</strong> Sign in with your Chillax Gaming App account at <code>/host</code> to use your linked Shop Code.</p>
           </div>
         </div>
       </div>
@@ -296,8 +296,8 @@ export function TvView() {
               )}
             </div>
             <div className="tv-join-code-box">
-              <span className="code-label">GAME CODE</span>
-              <span className="code-value">{session.shortCode}</span>
+              <span className="code-label">SHOP CODE</span>
+              <span className="code-value">{session.shopCode || session.shortCode}</span>
             </div>
             <p className="tv-join-instruction">
               Scan with phone camera or visit:

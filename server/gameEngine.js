@@ -6,7 +6,8 @@ import {
   recordHubTransaction,
   updateHubTvStatus,
   isValidHubPin,
-  getMongoStatus
+  getMongoStatus,
+  hubCache
 } from './mongo.js';
 import QRCode from 'qrcode';
 
@@ -288,18 +289,50 @@ export class GameEngine {
     };
   }
 
-  // Helper to retrieve full authoritative session snapshot
-  getSessionSnapshot(sessionId) {
+  // Guarantee that an existing session always has at least one active round
+  ensureCurrentRound(sessionId) {
+    if (!sessionId) return null;
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) return null;
 
-    // Get current active or latest round
-    const currentRound = db.prepare(`
+    let currentRound = db.prepare(`
       SELECT * FROM rounds 
       WHERE session_id = ? 
       ORDER BY round_number DESC 
       LIMIT 1
     `).get(sessionId);
+
+    if (!currentRound) {
+      const firstStandardPrize = db.prepare("SELECT id FROM prizes WHERE enabled = 1 AND prize_type != 'cash_multiplier' LIMIT 1").get();
+      const fallbackPrize = firstStandardPrize || db.prepare('SELECT id FROM prizes WHERE enabled = 1 LIMIT 1').get();
+      const prizeId = fallbackPrize ? fallbackPrize.id : null;
+      const prizeObj = prizeId ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(prizeId) : null;
+
+      const roundId = 'rnd_' + crypto.randomBytes(6).toString('hex');
+      const now = new Date().toISOString();
+
+      db.prepare(`
+        INSERT INTO rounds (id, session_id, round_number, status, prize_id, prize_snapshot_json, started_at)
+        VALUES (?, ?, 1, 'REGISTRATION_OPEN', ?, ?, ?)
+      `).run(roundId, sessionId, prizeId, prizeObj ? JSON.stringify(prizeObj) : null, now);
+
+      db.prepare(`UPDATE sessions SET status = 'REGISTRATION_OPEN' WHERE id = ?`).run(sessionId);
+      this.syncRoundToMongo(roundId);
+      this.syncSessionToMongo(sessionId);
+
+      currentRound = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+    }
+
+    return currentRound;
+  }
+
+  // Helper to retrieve full authoritative session snapshot
+  getSessionSnapshot(sessionId) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return null;
+
+    // Get current active or latest round (auto-healing if missing)
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     let entries = [];
     let prize = null;
@@ -331,9 +364,24 @@ export class GameEngine {
       ? db.prepare('SELECT * FROM entries WHERE id = ?').get(currentRound.winning_entry_id)
       : null;
 
+    let sessionSettings = {};
+    if (session.settings_json) {
+      try {
+        sessionSettings = JSON.parse(session.settings_json);
+      } catch {}
+    }
+    const matchedShop = (hubCache.shops || []).find(
+      (s) =>
+        (sessionSettings.shopId && s.id === sessionSettings.shopId) ||
+        String(s.shopCode || '').toUpperCase() === String(session.short_code || '').toUpperCase()
+    );
+
     return {
       sessionId: session.id,
       shortCode: session.short_code,
+      shopId: sessionSettings.shopId || matchedShop?.id || null,
+      shopName: sessionSettings.shopName || matchedShop?.name || null,
+      shopCode: sessionSettings.shopCode || matchedShop?.shopCode || session.short_code,
       status: currentRound ? currentRound.status : session.status,
       numberRange: {
         min: session.number_min,
@@ -381,22 +429,82 @@ export class GameEngine {
     return snapshot;
   }
 
-  // Create a new session with initial round
-  async createSession({ numberMin = 1, numberMax = 20, hostPin = '1234', defaultPrizeId = null }) {
-    let shortCode = generateShortCode();
-    // Ensure unique short code
-    while (db.prepare('SELECT id FROM sessions WHERE short_code = ?').get(shortCode)) {
-      shortCode = generateShortCode();
+  // Lookup a session by Shop Code (e.g. CHX-2855, CHX2855, 2855), shortCode, or TV pairing code
+  findSessionByCode(rawCode) {
+    if (!rawCode) return null;
+    const clean = String(rawCode).trim().toUpperCase();
+    const alnum = clean.replace(/[^A-Z0-9]/g, '');
+    const withChxPrefix = /^\d{3,5}$/.test(clean) ? `CHX-${clean}` : null;
+
+    let session = db.prepare(
+      'SELECT * FROM sessions WHERE UPPER(short_code) = ? OR UPPER(tv_pairing_code) = ?'
+    ).get(clean, clean);
+
+    if (!session && withChxPrefix) {
+      session = db.prepare(
+        'SELECT * FROM sessions WHERE UPPER(short_code) = ?'
+      ).get(withChxPrefix);
     }
 
-    const sessionId = 'sess_' + crypto.randomBytes(6).toString('hex');
-    const pairingCode = generatePairingCode();
-    const createdAt = new Date().toISOString();
+    if (!session && alnum) {
+      const allSessions = db.prepare('SELECT * FROM sessions ORDER BY created_at DESC').all();
+      session = allSessions.find((s) => {
+        const scAlnum = String(s.short_code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const pcAlnum = String(s.tv_pairing_code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        return scAlnum === alnum || pcAlnum === alnum;
+      }) || null;
+    }
 
-    db.prepare(`
-      INSERT INTO sessions (id, short_code, status, number_min, number_max, created_at, host_pin, tv_pairing_code)
-      VALUES (?, ?, 'REGISTRATION_OPEN', ?, ?, ?, ?, ?)
-    `).run(sessionId, shortCode, numberMin, numberMax, createdAt, hostPin, pairingCode);
+    return session;
+  }
+
+  // Ensure an active Spin & Win session exists for a linked Chillax Gaming Hub shop
+  async ensureShopSession({ shop, user = null }) {
+    if (!shop?.shopCode) return null;
+    const cleanShopCode = String(shop.shopCode).trim().toUpperCase();
+
+    const existing = this.findSessionByCode(cleanShopCode);
+    if (existing) {
+      const settingsJson = JSON.stringify({
+        shopId: shop.id,
+        shopName: shop.name,
+        shopCode: cleanShopCode
+      });
+      if (existing.short_code !== cleanShopCode || existing.settings_json !== settingsJson) {
+        db.prepare('UPDATE sessions SET short_code = ?, settings_json = ? WHERE id = ?').run(
+          cleanShopCode,
+          settingsJson,
+          existing.id
+        );
+        this.syncSessionToMongo(existing.id);
+      }
+      return this.getSessionSnapshot(existing.id);
+    }
+
+    const created = await this.createSession({
+      numberMin: 1,
+      numberMax: 20,
+      hostPin: shop.adminPin || user?.pin || '1234',
+      shopCode: cleanShopCode,
+      shopId: shop.id,
+      shopName: shop.name,
+      hostId: user?.id || shop.ownerId || 'host_default'
+    });
+    return created.snapshot;
+  }
+
+  // Create a new session with initial round (uses linked shopCode when provided)
+  async createSession({
+    numberMin = 1,
+    numberMax = 20,
+    hostPin = '1234',
+    defaultPrizeId = null,
+    shopCode = null,
+    shopId = null,
+    shopName = null,
+    hostId = 'host_default'
+  }) {
+    const cleanShopCode = shopCode ? String(shopCode).trim().toUpperCase() : null;
 
     // Pick a default prize if none provided
     let prizeId = defaultPrizeId;
@@ -405,8 +513,89 @@ export class GameEngine {
       const fallbackPrize = firstStandardPrize || db.prepare('SELECT id FROM prizes WHERE enabled = 1 LIMIT 1').get();
       prizeId = fallbackPrize ? fallbackPrize.id : null;
     }
-
     const prizeObj = prizeId ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(prizeId) : null;
+
+    // If a session already exists for this shopCode, reuse and open a fresh round on it
+    if (cleanShopCode) {
+      const existingShopSession = db.prepare('SELECT * FROM sessions WHERE UPPER(short_code) = ?').get(cleanShopCode);
+      if (existingShopSession) {
+        const settingsJson = JSON.stringify({
+          shopId: shopId || null,
+          shopName: shopName || null,
+          shopCode: cleanShopCode
+        });
+        db.prepare(`
+          UPDATE sessions
+          SET status = 'REGISTRATION_OPEN',
+              number_min = ?,
+              number_max = ?,
+              host_id = ?,
+              host_pin = ?,
+              settings_json = ?
+          WHERE id = ?
+        `).run(numberMin, numberMax, hostId, hostPin, settingsJson, existingShopSession.id);
+        this.syncSessionToMongo(existingShopSession.id);
+
+        const activeRound = db.prepare(
+          'SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1'
+        ).get(existingShopSession.id);
+
+        if (!activeRound) {
+          const roundId = 'rnd_' + crypto.randomBytes(6).toString('hex');
+          db.prepare(`
+            INSERT INTO rounds (id, session_id, round_number, status, prize_id, prize_snapshot_json, started_at)
+            VALUES (?, ?, 1, 'REGISTRATION_OPEN', ?, ?, ?)
+          `).run(roundId, existingShopSession.id, prizeId, prizeObj ? JSON.stringify(prizeObj) : null, new Date().toISOString());
+          this.syncRoundToMongo(roundId);
+        } else if (activeRound.status === 'REGISTRATION_OPEN' && prizeObj) {
+          db.prepare('UPDATE rounds SET prize_id = ?, prize_snapshot_json = ? WHERE id = ?').run(
+            prizeObj.id,
+            JSON.stringify(prizeObj),
+            activeRound.id
+          );
+          this.syncRoundToMongo(activeRound.id);
+        } else if (activeRound.status !== 'REGISTRATION_OPEN') {
+          this.createNextRound(existingShopSession.id, { prizeId, numberMin, numberMax });
+        }
+
+        const joinUrl = `/join?code=${cleanShopCode}`;
+        const qrCodeDataUrl = await QRCode.toDataURL(joinUrl, {
+          margin: 1,
+          color: { dark: '#00f2fe', light: '#070d1e' }
+        });
+
+        return {
+          sessionId: existingShopSession.id,
+          shortCode: cleanShopCode,
+          tvPairingCode: existingShopSession.tv_pairing_code || cleanShopCode,
+          qrCodeDataUrl,
+          joinUrl,
+          snapshot: this.broadcastSessionState(existingShopSession.id)
+        };
+      }
+    }
+
+    let shortCode = cleanShopCode || generateShortCode();
+    if (!cleanShopCode) {
+      while (db.prepare('SELECT id FROM sessions WHERE short_code = ?').get(shortCode)) {
+        shortCode = generateShortCode();
+      }
+    }
+
+    const sessionId = 'sess_' + crypto.randomBytes(6).toString('hex');
+    const digitsMatch = cleanShopCode ? cleanShopCode.match(/(\d{3,5})$/) : null;
+    const pairingCode = digitsMatch ? digitsMatch[1] : generatePairingCode();
+    const createdAt = new Date().toISOString();
+    const settingsJson = JSON.stringify({
+      shopId: shopId || null,
+      shopName: shopName || null,
+      shopCode: shortCode
+    });
+
+    db.prepare(`
+      INSERT INTO sessions (id, short_code, status, number_min, number_max, created_at, host_id, host_pin, tv_pairing_code, settings_json)
+      VALUES (?, ?, 'REGISTRATION_OPEN', ?, ?, ?, ?, ?, ?, ?)
+    `).run(sessionId, shortCode, numberMin, numberMax, createdAt, hostId, hostPin, pairingCode, settingsJson);
 
     // Create Round 1
     const roundId = 'rnd_' + crypto.randomBytes(6).toString('hex');
@@ -417,7 +606,7 @@ export class GameEngine {
 
     this.syncSessionToMongo(sessionId);
     this.syncRoundToMongo(roundId);
-    logAudit(sessionId, 'HOST', 'host_default', 'SESSION_CREATED', { shortCode, numberMin, numberMax });
+    logAudit(sessionId, 'HOST', hostId, 'SESSION_CREATED', { shortCode, shopId, shopName, numberMin, numberMax });
 
     // Generate QR code data URL for easy mobile scanning
     const joinUrl = `/join?code=${shortCode}`;
@@ -439,10 +628,10 @@ export class GameEngine {
     };
   }
 
-  // Pair TV to session using 4-digit pairing code or direct short code
+  // Pair TV to session using 4-digit pairing code or Shop Code (e.g. CHX-2855)
   pairTv(pairingCodeOrShortCode, tvId = null) {
     const code = String(pairingCodeOrShortCode).trim().toUpperCase();
-    let session = db.prepare('SELECT * FROM sessions WHERE tv_pairing_code = ? OR short_code = ?').get(code, code);
+    const session = this.findSessionByCode(code);
 
     if (!session) {
       return { success: false, error: 'Session or pairing code not found.' };
@@ -466,9 +655,7 @@ export class GameEngine {
       return { success: false, status: 404, error: 'Session not found.' };
     }
 
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     if (!currentRound) {
       return { success: false, status: 400, error: 'No active round found.' };
@@ -611,9 +798,7 @@ export class GameEngine {
       return { success: false, status: 404, error: 'Session not found.' };
     }
 
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     if (!currentRound) {
       return { success: false, status: 400, error: 'No active round found.' };
@@ -716,9 +901,7 @@ export class GameEngine {
       return { success: false, status: 404, error: 'Session not found.' };
     }
 
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     if (!currentRound) {
       return { success: false, status: 400, error: 'No active round found.' };
@@ -755,9 +938,7 @@ export class GameEngine {
 
   // Close registration (lock entries)
   closeRegistration(sessionId) {
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     if (!currentRound) return { success: false, error: 'Round not found.' };
 
@@ -780,9 +961,7 @@ export class GameEngine {
 
   // Re-open registration if needed before spinning
   reopenRegistration(sessionId) {
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     if (!currentRound) return { success: false, error: 'Round not found.' };
 
@@ -802,9 +981,7 @@ export class GameEngine {
 
   // Spin wheel and select winner cryptographically
   spin(sessionId, { idempotencyKey = null } = {}) {
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
 
     if (!currentRound) return { success: false, status: 400, error: 'No round found.' };
 
@@ -938,7 +1115,13 @@ export class GameEngine {
         // Record round transaction in chillaxgaminghub.transactions
         const roundTotalCollected = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
         if (roundTotalCollected > 0 || winningEntry) {
+          let txShopId = null;
+          try {
+            const sJson = session?.settings_json ? JSON.parse(session.settings_json) : {};
+            txShopId = sJson.shopId || null;
+          } catch {}
           recordHubTransaction({
+            shopId: txShopId,
             sessionId,
             roundId: currentRound.id,
             roundNumber: currentRound.round_number,
@@ -987,9 +1170,7 @@ export class GameEngine {
 
   // Update active round prize (e.g. toggling between Standard Prize and 3x Cash Multiplier)
   setRoundPrize(sessionId, prizeId) {
-    const currentRound = db.prepare(`
-      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
-    `).get(sessionId);
+    const currentRound = this.ensureCurrentRound(sessionId);
     if (!currentRound) return { success: false, status: 404, error: 'Active round not found.' };
 
     if (currentRound.status !== 'REGISTRATION_OPEN') {

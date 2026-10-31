@@ -205,106 +205,161 @@ export async function syncWithChillaxGamingHub(sqliteDb) {
     hubCache.products = products.map(({ _id, __v, ...rest }) => rest);
     hubCache.settings = settingsDoc ? (({ _id, __v, ...rest }) => rest)(settingsDoc) : null;
 
-    // 2. Pull remote spin_* documents from MongoDB into local query cache
+    // 2. Pull remote spin_* documents from MongoDB into local query cache (using ON CONFLICT DO UPDATE so ON DELETE CASCADE never wipes child rounds/entries)
     const remotePrizes = await SpinPrize.find({}).lean();
     for (const p of remotePrizes) {
       if (!p.id) continue;
-      sqliteDb.prepare(`
-        INSERT OR REPLACE INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        p.id,
-        p.name || 'Prize',
-        p.description || '',
-        p.prize_type || 'standard',
-        p.value || '',
-        p.color || '#06b6d4',
-        p.enabled !== undefined ? Number(p.enabled) : 1,
-        p.stock_count !== undefined ? Number(p.stock_count) : 99
-      );
+      try {
+        sqliteDb.prepare(`
+          INSERT INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            description = excluded.description,
+            prize_type = excluded.prize_type,
+            value = excluded.value,
+            color = excluded.color,
+            enabled = excluded.enabled,
+            stock_count = excluded.stock_count
+        `).run(
+          p.id,
+          p.name || 'Prize',
+          p.description || '',
+          p.prize_type || 'standard',
+          p.value || '',
+          p.color || '#06b6d4',
+          p.enabled !== undefined ? Number(p.enabled) : 1,
+          p.stock_count !== undefined ? Number(p.stock_count) : 99
+        );
+      } catch {}
     }
 
     const remoteSessions = await SpinSession.find({}).lean();
     for (const s of remoteSessions) {
       if (!s.id || !s.short_code) continue;
-      sqliteDb.prepare(`
-        INSERT OR REPLACE INTO sessions (id, short_code, status, number_min, number_max, created_at, host_id, host_pin, tv_connected, tv_pairing_code, winner_mode, settings_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        s.id,
-        s.short_code,
-        s.status || 'IDLE',
-        Number(s.number_min) || 1,
-        Number(s.number_max) || 20,
-        s.created_at || new Date().toISOString(),
-        s.host_id || 'host_default',
-        s.host_pin || '1234',
-        Number(s.tv_connected) || 0,
-        s.tv_pairing_code || null,
-        s.winner_mode || 'TRUE_ODDS',
-        s.settings_json || '{}'
-      );
+      try {
+        const existingByCode = sqliteDb.prepare('SELECT id FROM sessions WHERE short_code = ? AND id != ?').get(s.short_code, s.id);
+        if (existingByCode) continue;
+        sqliteDb.prepare(`
+          INSERT INTO sessions (id, short_code, status, number_min, number_max, created_at, host_id, host_pin, tv_connected, tv_pairing_code, winner_mode, settings_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            short_code = excluded.short_code,
+            status = excluded.status,
+            number_min = excluded.number_min,
+            number_max = excluded.number_max,
+            host_id = excluded.host_id,
+            host_pin = excluded.host_pin,
+            tv_connected = excluded.tv_connected,
+            tv_pairing_code = excluded.tv_pairing_code,
+            winner_mode = excluded.winner_mode,
+            settings_json = excluded.settings_json
+        `).run(
+          s.id,
+          s.short_code,
+          s.status || 'IDLE',
+          Number(s.number_min) || 1,
+          Number(s.number_max) || 20,
+          s.created_at || new Date().toISOString(),
+          s.host_id || 'host_default',
+          s.host_pin || '1234',
+          Number(s.tv_connected) || 0,
+          s.tv_pairing_code || null,
+          s.winner_mode || 'TRUE_ODDS',
+          s.settings_json || '{}'
+        );
+      } catch {}
     }
 
     const remoteRounds = await SpinRound.find({}).lean();
     for (const r of remoteRounds) {
       if (!r.id || !r.session_id) continue;
-      sqliteDb.prepare(`
-        INSERT OR REPLACE INTO rounds (id, session_id, round_number, status, prize_id, prize_snapshot_json, winning_number, winning_entry_id, applied_multiplier, started_at, result_at, cancelled_at, cancel_reason, idempotency_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        r.id,
-        r.session_id,
-        Number(r.round_number) || 1,
-        r.status || 'IDLE',
-        r.prize_id || null,
-        r.prize_snapshot_json || null,
-        r.winning_number !== undefined ? r.winning_number : null,
-        r.winning_entry_id || null,
-        Number(r.applied_multiplier) || 0,
-        r.started_at || null,
-        r.result_at || null,
-        r.cancelled_at || null,
-        r.cancel_reason || null,
-        r.idempotency_key || null
-      );
+      try {
+        sqliteDb.prepare(`
+          INSERT INTO rounds (id, session_id, round_number, status, prize_id, prize_snapshot_json, winning_number, winning_entry_id, applied_multiplier, started_at, result_at, cancelled_at, cancel_reason, idempotency_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            round_number = excluded.round_number,
+            status = excluded.status,
+            prize_id = excluded.prize_id,
+            prize_snapshot_json = excluded.prize_snapshot_json,
+            winning_number = excluded.winning_number,
+            winning_entry_id = excluded.winning_entry_id,
+            applied_multiplier = excluded.applied_multiplier,
+            started_at = excluded.started_at,
+            result_at = excluded.result_at,
+            cancelled_at = excluded.cancelled_at,
+            cancel_reason = excluded.cancel_reason,
+            idempotency_key = excluded.idempotency_key
+        `).run(
+          r.id,
+          r.session_id,
+          Number(r.round_number) || 1,
+          r.status || 'IDLE',
+          r.prize_id || null,
+          r.prize_snapshot_json || null,
+          r.winning_number !== undefined ? r.winning_number : null,
+          r.winning_entry_id || null,
+          Number(r.applied_multiplier) || 0,
+          r.started_at || null,
+          r.result_at || null,
+          r.cancelled_at || null,
+          r.cancel_reason || null,
+          r.idempotency_key || null
+        );
+      } catch {}
     }
 
     const remoteEntries = await SpinEntry.find({}).lean();
     for (const e of remoteEntries) {
       if (!e.id || !e.session_id || !e.round_id) continue;
-      sqliteDb.prepare(`
-        INSERT OR REPLACE INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        e.id,
-        e.session_id,
-        e.round_id,
-        Number(e.number),
-        e.player_token,
-        e.nickname || 'Player',
-        Number(e.bet_amount) || 0,
-        Number(e.payout_amount) || 0,
-        e.claimed_at || new Date().toISOString(),
-        e.status || 'ACTIVE'
-      );
+      try {
+        sqliteDb.prepare(`
+          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            number = excluded.number,
+            nickname = excluded.nickname,
+            bet_amount = excluded.bet_amount,
+            payout_amount = excluded.payout_amount,
+            status = excluded.status
+        `).run(
+          e.id,
+          e.session_id,
+          e.round_id,
+          Number(e.number),
+          e.player_token,
+          e.nickname || 'Player',
+          Number(e.bet_amount) || 0,
+          Number(e.payout_amount) || 0,
+          e.claimed_at || new Date().toISOString(),
+          e.status || 'ACTIVE'
+        );
+      } catch {}
     }
 
     const remoteRedemptions = await SpinRedemption.find({}).lean();
     for (const red of remoteRedemptions) {
       if (!red.id || !red.round_id) continue;
-      sqliteDb.prepare(`
-        INSERT OR REPLACE INTO redemptions (id, round_id, prize_id, redeemed_by, redeemed_at, status, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        red.id,
-        red.round_id,
-        red.prize_id || 'prize_default',
-        red.redeemed_by || 'Staff Host',
-        red.redeemed_at || new Date().toISOString(),
-        red.status || 'REDEEMED',
-        red.notes || ''
-      );
+      try {
+        sqliteDb.prepare(`
+          INSERT INTO redemptions (id, round_id, prize_id, redeemed_by, redeemed_at, status, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            redeemed_by = excluded.redeemed_by,
+            redeemed_at = excluded.redeemed_at,
+            status = excluded.status,
+            notes = excluded.notes
+        `).run(
+          red.id,
+          red.round_id,
+          red.prize_id || 'prize_default',
+          red.redeemed_by || 'Staff Host',
+          red.redeemed_at || new Date().toISOString(),
+          red.status || 'REDEEMED',
+          red.notes || ''
+        );
+      } catch {}
     }
 
     // 3. Push local records to MongoDB `chillaxgaminghub` (upsert)
@@ -492,6 +547,303 @@ export function isValidHubPin(inputPin) {
     }
   }
   return false;
+}
+
+/**
+ * Refreshes `users` and `shops` from `chillaxgaminghub` MongoDB so login is always live-synced.
+ */
+export async function refreshHubAuthCache() {
+  if (mongoose.connection.readyState !== 1) {
+    await connectMongo();
+  }
+  if (mongoose.connection.readyState === 1) {
+    try {
+      const [shops, users] = await Promise.all([
+        HubShop.find({}).lean(),
+        HubUser.find({}).lean()
+      ]);
+      hubCache.shops = shops.map(({ _id, __v, ...rest }) => rest);
+      hubCache.users = users.map(({ _id, __v, ...rest }) => rest);
+      hubCache.collectionCounts.shops = hubCache.shops.length;
+      hubCache.collectionCounts.users = hubCache.users.length;
+    } catch (err) {
+      console.warn('[MongoDB] Failed to refresh users/shops from chillaxgaminghub:', err.message);
+    }
+  }
+}
+
+function generateUniqueShopCode() {
+  const existingCodes = new Set((hubCache.shops || []).map((s) => String(s.shopCode || '').toUpperCase()));
+  let code = `CHX-${Math.floor(1000 + Math.random() * 9000)}`;
+  while (existingCodes.has(code)) {
+    code = `CHX-${Math.floor(1000 + Math.random() * 9000)}`;
+  }
+  return code;
+}
+
+/**
+ * Resolves the linked shop for a user from `chillaxgaminghub.shops`.
+ * If the user's linked shop record does not yet exist in `shops`, creates and syncs it
+ * so that every authenticated user always has a valid linked shop with a `shopCode`.
+ */
+export async function resolveLinkedShopForUser(user) {
+  if (!user) return null;
+
+  let shop = null;
+  if (user.shopId) {
+    shop = (hubCache.shops || []).find((s) => s.id === user.shopId) || null;
+  }
+  if (!shop) {
+    shop = (hubCache.shops || []).find((s) => s.ownerId === user.id) || null;
+  }
+
+  // If user is admin/staff and default shop exists
+  if (!shop && (user.username === 'admin' || user.username === 'staff' || user.role === 'superadmin') && hubCache.shops.length > 0) {
+    shop = hubCache.shops[0];
+  }
+
+  // If still no shop document found for this user, create one in chillaxgaminghub.shops
+  if (!shop) {
+    const shopId = user.shopId && user.shopId !== 'shop_default'
+      ? user.shopId
+      : `shop_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const shopCode = generateUniqueShopCode();
+    const now = new Date().toISOString();
+
+    shop = {
+      id: shopId,
+      shopCode,
+      name: `${user.name || user.username}'s Gaming Center`,
+      ownerId: user.id,
+      currency: 'R',
+      currencyCode: 'ZAR',
+      retailPosEnabled: false,
+      settings: {
+        warningMinutes: 5,
+        adminPin: user.pin || '1234',
+        autoSwitchHdmi: true,
+        audioAlertsEnabled: true,
+        kioskLockEnabled: true,
+        retailPosEnabled: false
+      },
+      createdAt: now,
+      updatedAt: now
+    };
+
+    hubCache.shops.push(shop);
+    user.shopId = shop.id;
+
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await HubShop.findOneAndUpdate({ id: shop.id }, shop, { upsert: true, returnDocument: 'after', lean: true });
+        await HubUser.findOneAndUpdate({ id: user.id }, { $set: { shopId: shop.id, updatedAt: now } }, { upsert: true });
+      } catch (err) {
+        console.warn('[MongoDB] Failed to persist auto-linked shop:', err.message);
+      }
+    }
+  } else if (user.shopId !== shop.id) {
+    user.shopId = shop.id;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await HubUser.findOneAndUpdate({ id: user.id }, { $set: { shopId: shop.id, updatedAt: new Date().toISOString() } });
+      } catch {}
+    }
+  }
+
+  return {
+    id: shop.id,
+    shopCode: shop.shopCode,
+    name: shop.name,
+    ownerId: shop.ownerId,
+    currency: shop.currency || 'R',
+    currencyCode: shop.currencyCode || 'ZAR',
+    adminPin: shop.settings?.adminPin || user.pin || '1234'
+  };
+}
+
+/**
+ * Authenticates a user against `chillaxgaminghub.users` (username or email + password)
+ * and resolves their linked shop and `shopCode` from `chillaxgaminghub.shops`.
+ */
+export async function authenticateHubUser({ usernameOrEmail, password }) {
+  const cleanIdent = String(usernameOrEmail || '').trim().toLowerCase();
+  const cleanPassword = String(password || '').trim();
+
+  if (!cleanIdent || !cleanPassword) {
+    return { success: false, status: 400, error: 'Username/email and password are required.' };
+  }
+
+  await refreshHubAuthCache();
+
+  const user = (hubCache.users || []).find(
+    (u) =>
+      String(u.username || '').trim().toLowerCase() === cleanIdent ||
+      (u.email && String(u.email).trim().toLowerCase() === cleanIdent)
+  );
+
+  if (!user || String(user.password || '').trim() !== cleanPassword) {
+    return { success: false, status: 401, error: 'Invalid username or password.' };
+  }
+
+  const shop = await resolveLinkedShopForUser(user);
+
+  return {
+    success: true,
+    user: {
+      id: user.id,
+      username: user.username,
+      name: user.name || user.username,
+      email: user.email || '',
+      role: user.role || 'owner',
+      shopId: shop.id,
+      pin: user.pin || '1234'
+    },
+    shop
+  };
+}
+
+/**
+ * Registers a new user and linked shop in `chillaxgaminghub` (synced with Chillax Gaming App).
+ */
+export async function registerHubUserAndShop({ name, username, email = '', password, shopName }) {
+  const cleanUsername = String(username || '').trim().toLowerCase();
+  const cleanPassword = String(password || '').trim();
+  const cleanName = String(name || cleanUsername).trim();
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanShopName = String(shopName || 'Chillax Gaming Center').trim();
+
+  if (!cleanUsername || !cleanPassword) {
+    return { success: false, status: 400, error: 'Username and password are required.' };
+  }
+  if (cleanPassword.length < 4) {
+    return { success: false, status: 400, error: 'Password must be at least 4 characters.' };
+  }
+
+  await refreshHubAuthCache();
+
+  const existing = (hubCache.users || []).find(
+    (u) => String(u.username || '').trim().toLowerCase() === cleanUsername
+  );
+  if (existing) {
+    return { success: false, status: 400, error: 'Username already taken. Please choose another.' };
+  }
+
+  const now = new Date().toISOString();
+  const userId = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const shopId = `shop_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const shopCode = generateUniqueShopCode();
+
+  const newShop = {
+    id: shopId,
+    shopCode,
+    name: cleanShopName,
+    ownerId: userId,
+    currency: 'R',
+    currencyCode: 'ZAR',
+    retailPosEnabled: false,
+    settings: {
+      warningMinutes: 5,
+      adminPin: '1234',
+      autoSwitchHdmi: true,
+      audioAlertsEnabled: true,
+      kioskLockEnabled: true,
+      retailPosEnabled: false
+    },
+    subscription: {
+      status: 'active',
+      plan: 'per_station',
+      ratePerStation: 2,
+      unlimitedPrice: 15,
+      stationLimit: 10,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      notes: 'Active subscription',
+      blockedReason: '',
+      lastPaymentDate: now
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+
+  const newUser = {
+    id: userId,
+    username: cleanUsername,
+    name: cleanName,
+    email: cleanEmail,
+    shopId,
+    role: 'owner',
+    pin: '1234',
+    password: cleanPassword,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  hubCache.shops.unshift(newShop);
+  hubCache.users.unshift(newUser);
+  hubCache.collectionCounts.shops = hubCache.shops.length;
+  hubCache.collectionCounts.users = hubCache.users.length;
+
+  if (mongoose.connection.readyState === 1) {
+    try {
+      await Promise.all([
+        HubShop.findOneAndUpdate({ id: newShop.id }, newShop, { upsert: true, returnDocument: 'after', lean: true }),
+        HubUser.findOneAndUpdate({ id: newUser.id }, newUser, { upsert: true, returnDocument: 'after', lean: true })
+      ]);
+    } catch (err) {
+      console.error('[MongoDB] Failed to persist registered user/shop to chillaxgaminghub:', err.message);
+    }
+  }
+
+  return {
+    success: true,
+    user: {
+      id: newUser.id,
+      username: newUser.username,
+      name: newUser.name,
+      email: newUser.email,
+      role: newUser.role,
+      shopId: newShop.id,
+      pin: newUser.pin
+    },
+    shop: {
+      id: newShop.id,
+      shopCode: newShop.shopCode,
+      name: newShop.name,
+      ownerId: newShop.ownerId,
+      currency: newShop.currency,
+      currencyCode: newShop.currencyCode,
+      adminPin: '1234'
+    }
+  };
+}
+
+/**
+ * Resolves a currently logged-in user and their linked shop by userId or username.
+ */
+export async function resolveHubUserAndShopById({ userId, username }) {
+  await refreshHubAuthCache();
+  let user = null;
+  if (userId) {
+    user = (hubCache.users || []).find((u) => u.id === userId) || null;
+  }
+  if (!user && username) {
+    const clean = String(username).trim().toLowerCase();
+    user = (hubCache.users || []).find((u) => String(u.username || '').trim().toLowerCase() === clean) || null;
+  }
+  if (!user) return null;
+
+  const shop = await resolveLinkedShopForUser(user);
+  return {
+    user: {
+      id: user.id,
+      username: user.username,
+      name: user.name || user.username,
+      email: user.email || '',
+      role: user.role || 'owner',
+      shopId: shop.id,
+      pin: user.pin || '1234'
+    },
+    shop
+  };
 }
 
 export function getMongoStatus() {

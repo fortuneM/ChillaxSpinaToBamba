@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { db } from '../server/db.js';
 import { GameEngine } from '../server/gameEngine.js';
-import { buildMongoUri, getMongoStatus, hubCache } from '../server/mongo.js';
+import { buildMongoUri, getMongoStatus, hubCache, resolveLinkedShopForUser } from '../server/mongo.js';
 
 // Mock Socket.io for testing
 class MockSocketIO {
@@ -294,7 +294,38 @@ async function runTests() {
   assert.strictEqual(hubPinRes.success, true, 'Host PIN verification must accept PINs from chillaxgaminghub.users');
   console.log('  ✅ MongoDB "chillaxgaminghub" integration passed');
 
-  console.log('\n🎉 ALL 12 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 13. Chillax Gaming App Synced Login & Linked Shop Code Session
+  console.log('Test 13: Chillax Gaming App Synced Login & Linked Shop Code Session');
+  hubCache.shops.push({
+    id: 'shop_test_2855',
+    shopCode: 'CHX-2855',
+    name: 'Gaming Lounge',
+    ownerId: 'usr_test_owner',
+    currency: 'R'
+  });
+  const testUser = {
+    id: 'usr_test_owner',
+    username: 'fortuinem',
+    name: 'Fortuin',
+    shopId: 'shop_test_2855',
+    pin: '1234'
+  };
+  const linkedShop = await resolveLinkedShopForUser(testUser);
+  assert.strictEqual(linkedShop.shopCode, 'CHX-2855', 'Linked shop must resolve shopCode CHX-2855');
+  assert.strictEqual(linkedShop.name, 'Gaming Lounge', 'Linked shop must resolve shop name');
+
+  const shopSessionSnapshot = await engine.ensureShopSession({ shop: linkedShop, user: testUser });
+  assert.strictEqual(shopSessionSnapshot.shortCode, 'CHX-2855', 'Session shortCode must come from the linked shopCode');
+  assert.strictEqual(shopSessionSnapshot.shopCode, 'CHX-2855', 'Session shopCode must match linked shopCode');
+  assert.strictEqual(shopSessionSnapshot.shopName, 'Gaming Lounge', 'Session shopName must match linked shop name');
+
+  // Verify lookup works with exact CHX-2855, without hyphen CHX2855, or digits 2855
+  assert(engine.findSessionByCode('CHX-2855'), 'Should find session by exact Shop Code CHX-2855');
+  assert(engine.findSessionByCode('CHX2855'), 'Should find session by Shop Code without hyphen CHX2855');
+  assert(engine.findSessionByCode('2855'), 'Should find session by 4-digit Shop Code suffix 2855');
+  console.log('  ✅ Chillax Gaming App synced login & linked Shop Code passed');
+
+  console.log('\n🎉 ALL 13 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

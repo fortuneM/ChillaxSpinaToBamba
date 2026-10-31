@@ -163,13 +163,13 @@ export function PlayerView() {
             className="player-form"
           >
             <div className="player-input-group">
-              <label>Game Code (5 Letters)</label>
+              <label>Shop Code</label>
               <input
                 type="text"
-                maxLength={6}
+                maxLength={12}
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="e.g. K7P4Q"
+                placeholder="e.g. CHX-2855"
                 className="player-code-input"
                 autoFocus
               />
@@ -228,8 +228,8 @@ export function PlayerView() {
       {/* Top Mobile Bar */}
       <div className="player-top-bar">
         <div>
-          <span className="player-bar-brand">CHILLAX SPIN</span>
-          <span className="player-bar-code">CODE: {session.shortCode}</span>
+          <span className="player-bar-brand">{session.shopName || 'CHILLAX SPIN'}</span>
+          <span className="player-bar-code">SHOP CODE: {session.shopCode || session.shortCode}</span>
         </div>
         <div className="player-round-tag">
           Round #{currentRound?.roundNumber || 1}
