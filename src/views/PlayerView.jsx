@@ -224,14 +224,12 @@ export function PlayerView() {
   const isLoser = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber !== currentRound?.winningNumber;
 
   // Grid displays 0 and 00 at the top row, followed by 1 to N
-  const gridDisplayNumbers = useMemo(() => {
-    const all = session?.wheelNumbers || [
-      '0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }).map((_, i) => String((session?.numberRange?.min || 1) + i))
-    ];
-    const zeros = all.filter((n) => n === '0' || n === '00');
-    const nonZeros = all.filter((n) => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
-    return [...zeros, ...nonZeros];
-  }, [session?.wheelNumbers, session?.numberRange]);
+  const allWheelPockets = session?.wheelNumbers || [];
+  const zeros = allWheelPockets.filter((n) => n === '0' || n === '00');
+  const nonZeros = allWheelPockets.filter((n) => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
+  const gridDisplayNumbers = (zeros.length > 0 || nonZeros.length > 0)
+    ? [...zeros, ...nonZeros]
+    : ['0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }, (_, i) => String((session?.numberRange?.min || 1) + i))];
 
   return (
     <div className="player-arena-container">

@@ -850,14 +850,12 @@ export function HostView() {
   const activeShopName = linkedShop?.name || session.shopName || 'CHILLAX';
 
   // For grid display, show 0 and 00 at the top followed by numbers in ascending order
-  const gridDisplayNumbers = useMemo(() => {
-    const all = session?.wheelNumbers || [
-      '0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }).map((_, i) => String((session?.numberRange?.min || 1) + i))
-    ];
-    const zeros = all.filter(n => n === '0' || n === '00');
-    const nonZeros = all.filter(n => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
-    return [...zeros, ...nonZeros];
-  }, [session?.wheelNumbers, session?.numberRange]);
+  const allWheelPockets = session?.wheelNumbers || [];
+  const zeros = allWheelPockets.filter((n) => n === '0' || n === '00');
+  const nonZeros = allWheelPockets.filter((n) => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
+  const gridDisplayNumbers = (zeros.length > 0 || nonZeros.length > 0)
+    ? [...zeros, ...nonZeros]
+    : ['0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }, (_, i) => String((session?.numberRange?.min || 1) + i))];
 
   return (
     <div className="host-dashboard">
