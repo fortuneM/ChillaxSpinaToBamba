@@ -997,12 +997,48 @@ body {
   gap: 0.55rem;
 }
 
+.host-profit-engine-card.collapsed {
+  padding: 0.55rem 0.85rem;
+}
+
 .profit-engine-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.profit-engine-header.clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.profit-engine-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.profit-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  color: #34d399;
+  font-family: var(--font-arcade);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.22rem 0.55rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.profit-toggle-btn:hover {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: #10b981;
 }
 
 .profit-engine-title {

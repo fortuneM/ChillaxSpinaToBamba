@@ -3,7 +3,7 @@ import { getSocket } from '../utils/socket';
 import { 
   Play, Lock, Unlock, RotateCcw, Award, CheckCircle2, 
   XCircle, History, Shield, Users, RefreshCw,
-  UserPlus, Trash2, Check, Database
+  UserPlus, Trash2, Check, Database, Eye, EyeOff
 } from 'lucide-react';
 
 export function HostView() {
@@ -32,7 +32,18 @@ export function HostView() {
   const [mongoUriInput, setMongoUriInput] = useState('');
   const [mongoConnecting, setMongoConnecting] = useState(false);
   const [mongoFeedback, setMongoFeedback] = useState('');
+  const [showProfitEngine, setShowProfitEngine] = useState(
+    () => localStorage.getItem('chillax_show_profit_engine') === 'true'
+  );
   const walkInInputRef = useRef(null);
+
+  const toggleProfitEngine = () => {
+    setShowProfitEngine((prev) => {
+      const next = !prev;
+      localStorage.setItem('chillax_show_profit_engine', String(next));
+      return next;
+    });
+  };
 
   // Check stored PIN on load
   useEffect(() => {
@@ -571,33 +582,69 @@ export function HostView() {
 
       {/* House Profit Protection & Multiplier Telemetry Pod (Cash Mode) */}
       {isCashRound && session.houseCashStats && (
-        <div className="host-profit-engine-card">
-          <div className="profit-engine-header">
+        <div className={`host-profit-engine-card ${showProfitEngine ? 'expanded' : 'collapsed'}`}>
+          <div
+            className="profit-engine-header clickable"
+            onClick={toggleProfitEngine}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleProfitEngine();
+              }
+            }}
+          >
             <span className="profit-engine-title">🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x)</span>
-            <span className={`profit-3x-status ${session.houseCashStats.is3xReady ? 'unlocked' : 'locked'}`}>
-              {session.houseCashStats.is3xReady ? '🔓 3x Jackpot Unlocked' : '🔒 3x Gated (1.5x / 2x Active)'}
-            </span>
+            <div className="profit-engine-header-right">
+              {showProfitEngine && (
+                <span className={`profit-3x-status ${session.houseCashStats.is3xReady ? 'unlocked' : 'locked'}`}>
+                  {session.houseCashStats.is3xReady ? '🔓 3x Jackpot Unlocked' : '🔒 3x Gated (1.5x / 2x Active)'}
+                </span>
+              )}
+              <button
+                type="button"
+                className="profit-toggle-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleProfitEngine();
+                }}
+                title={showProfitEngine ? 'Hide Smart Profit-Guard Engine' : 'Show Smart Profit-Guard Engine'}
+              >
+                {showProfitEngine ? (
+                  <>
+                    <EyeOff size={13} /> Hide
+                  </>
+                ) : (
+                  <>
+                    <Eye size={13} /> Show
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-          <div className="profit-metrics-grid">
-            <div className="profit-metric-box">
-              <span className="metric-label">Collected</span>
-              <span className="metric-val">R{session.houseCashStats.historicalCollected + (session.totalBets || 0)}</span>
+          {showProfitEngine && (
+            <div className="profit-metrics-grid">
+              <div className="profit-metric-box">
+                <span className="metric-label">Collected</span>
+                <span className="metric-val">R{session.houseCashStats.historicalCollected + (session.totalBets || 0)}</span>
+              </div>
+              <div className="profit-metric-box">
+                <span className="metric-label">Paid Out</span>
+                <span className="metric-val">R{session.houseCashStats.historicalPaidOut}</span>
+              </div>
+              <div className="profit-metric-box">
+                <span className="metric-label">Net Profit</span>
+                <span className="metric-val text-green">
+                  R{Math.round((session.houseCashStats.netProfit + (session.totalBets || 0)) * 100) / 100}
+                </span>
+              </div>
+              <div className="profit-metric-box">
+                <span className="metric-label">Surplus Reserve</span>
+                <span className="metric-val text-gold">R{session.houseCashStats.surplusReserve}</span>
+              </div>
             </div>
-            <div className="profit-metric-box">
-              <span className="metric-label">Paid Out</span>
-              <span className="metric-val">R{session.houseCashStats.historicalPaidOut}</span>
-            </div>
-            <div className="profit-metric-box">
-              <span className="metric-label">Net Profit</span>
-              <span className="metric-val text-green">
-                R{Math.round((session.houseCashStats.netProfit + (session.totalBets || 0)) * 100) / 100}
-              </span>
-            </div>
-            <div className="profit-metric-box">
-              <span className="metric-label">Surplus Reserve</span>
-              <span className="metric-val text-gold">R{session.houseCashStats.surplusReserve}</span>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
