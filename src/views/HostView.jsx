@@ -849,6 +849,16 @@ export function HostView() {
   const activeShopCode = linkedShop?.shopCode || session.shopCode || session.shortCode;
   const activeShopName = linkedShop?.name || session.shopName || 'CHILLAX';
 
+  // For grid display, show 0 and 00 at the top followed by numbers in ascending order
+  const gridDisplayNumbers = useMemo(() => {
+    const all = session?.wheelNumbers || [
+      '0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }).map((_, i) => String((session?.numberRange?.min || 1) + i))
+    ];
+    const zeros = all.filter(n => n === '0' || n === '00');
+    const nonZeros = all.filter(n => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
+    return [...zeros, ...nonZeros];
+  }, [session?.wheelNumbers, session?.numberRange]);
+
   return (
     <div className="host-dashboard">
       {/* Top Controller Bar */}
@@ -1349,9 +1359,7 @@ export function HostView() {
         )}
 
         <div className="host-number-chips-grid">
-          {(session.wheelNumbers || [
-            '0', '00', ...Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => String(session.numberRange.min + i))
-          ]).map((num) => {
+          {gridDisplayNumbers.map((num) => {
             const entry = session.entries?.find(e => String(e.number) === String(num));
             const isWinner = isResult && String(currentRound?.winningNumber) === String(num);
             const isSelected = String(selectedPickNum) === String(num);

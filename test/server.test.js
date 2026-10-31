@@ -330,8 +330,12 @@ async function runTests() {
   const wheelSnap = engine.getSessionSnapshot(session.sessionId);
   assert(wheelSnap.wheelNumbers.includes('0'), 'Wheel numbers must include single zero "0"');
   assert(wheelSnap.wheelNumbers.includes('00'), 'Wheel numbers must include double zero "00"');
-  assert.strictEqual(wheelSnap.wheelNumbers[0], '0');
-  assert.strictEqual(wheelSnap.wheelNumbers[1], '00');
+  assert.strictEqual(wheelSnap.wheelNumbers[0], '0', '0 should be at top');
+  assert.strictEqual(
+    wheelSnap.wheelNumbers[Math.floor(wheelSnap.wheelNumbers.length / 2)],
+    '00',
+    'Double zero "00" must be positioned directly opposite single zero "0" across the wheel'
+  );
 
   // Create a new round on session to test claiming 0 and 00
   const rZerosRes = engine.createNextRound(session.sessionId, { prizeId: 'prize_1', numberMax: 10, hasDoubleZero: true });

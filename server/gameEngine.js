@@ -37,16 +37,23 @@ export function generatePairingCode() {
   return String(crypto.randomInt(1000, 9999));
 }
 
-// Generate authoritative wheel numbers array (e.g. ['0', '00', '1'..'N'])
+// Generate authoritative wheel numbers array with 0 and 00 positioned directly opposite each other
 export function buildWheelNumbers({ min = 1, max = 20, hasDoubleZero = true } = {}) {
-  const list = [];
-  if (hasDoubleZero) {
-    list.push('0', '00');
-  }
+  const regularNums = [];
   for (let i = min; i <= max; i++) {
-    list.push(String(i));
+    regularNums.push(String(i));
   }
-  return list;
+
+  if (!hasDoubleZero) {
+    return regularNums;
+  }
+
+  // Place '0' at top (index 0) and '00' directly opposite across the wheel (at 180 degrees)
+  const half = Math.floor(regularNums.length / 2);
+  const firstHalf = regularNums.slice(0, half);
+  const secondHalf = regularNums.slice(half);
+
+  return ['0', ...firstHalf, '00', ...secondHalf];
 }
 
 export class GameEngine {

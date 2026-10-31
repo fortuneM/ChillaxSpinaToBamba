@@ -29,15 +29,27 @@ export function ArcadeWheel({
   const currentRotationRef = useRef(0);
   const isCurrentlySpinningRef = useRef(false);
 
+  // Build wheel numbers with 0 at the top (12 o'clock) and 00 directly opposite (6 o'clock)
   const numbers = useMemo(() => {
+    let raw = [];
     if (Array.isArray(wheelNumbers) && wheelNumbers.length > 0) {
-      return wheelNumbers.map(String);
+      raw = wheelNumbers.map(String);
+    } else {
+      for (let i = min; i <= max; i++) {
+        raw.push(String(i));
+      }
+      return ['0', ...raw.slice(0, Math.floor(raw.length / 2)), '00', ...raw.slice(Math.floor(raw.length / 2))];
     }
-    const list = ['0', '00'];
-    for (let i = min; i <= max; i++) {
-      list.push(String(i));
+
+    // If both '0' and '00' are present, ensure they are placed directly opposite each other across the wheel
+    const has0 = raw.includes('0');
+    const has00 = raw.includes('00');
+    if (has0 && has00) {
+      const nonZeros = raw.filter((n) => n !== '0' && n !== '00');
+      const half = Math.floor(nonZeros.length / 2);
+      return ['0', ...nonZeros.slice(0, half), '00', ...nonZeros.slice(half)];
     }
-    return list;
+    return raw;
   }, [wheelNumbers, min, max]);
 
   const totalSegments = Math.max(1, numbers.length);

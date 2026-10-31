@@ -223,6 +223,16 @@ export function PlayerView() {
   const isNoWinner = status === 'RESULT' && !currentRound?.hasWinner;
   const isLoser = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber !== currentRound?.winningNumber;
 
+  // Grid displays 0 and 00 at the top row, followed by 1 to N
+  const gridDisplayNumbers = useMemo(() => {
+    const all = session?.wheelNumbers || [
+      '0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }).map((_, i) => String((session?.numberRange?.min || 1) + i))
+    ];
+    const zeros = all.filter((n) => n === '0' || n === '00');
+    const nonZeros = all.filter((n) => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
+    return [...zeros, ...nonZeros];
+  }, [session?.wheelNumbers, session?.numberRange]);
+
   return (
     <div className="player-arena-container">
       {/* Top Mobile Bar */}
@@ -443,7 +453,7 @@ export function PlayerView() {
         </div>
 
         <div className="player-number-grid">
-          {(session.wheelNumbers || Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => String(session.numberRange.min + i))).map((num) => {
+          {gridDisplayNumbers.map((num) => {
             const entry = session.entries?.find((e) => String(e.number) === String(num));
             const isMyPick = String(myClaimedNumber) === String(num);
             const isTaken = Boolean(entry && !isMyPick);
