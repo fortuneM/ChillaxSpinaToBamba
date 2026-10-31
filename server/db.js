@@ -31,12 +31,22 @@ db.exec(`
     tv_connected INTEGER NOT NULL DEFAULT 0,
     tv_pairing_code TEXT,
     winner_mode TEXT NOT NULL DEFAULT 'TRUE_ODDS',
+    has_double_zero INTEGER NOT NULL DEFAULT 1,
+    wheel_numbers_json TEXT,
     settings_json TEXT NOT NULL DEFAULT '{}'
   );
 `);
 
 try {
   db.exec("ALTER TABLE sessions ADD COLUMN winner_mode TEXT DEFAULT 'TRUE_ODDS';");
+} catch(e) {}
+
+try {
+  db.exec("ALTER TABLE sessions ADD COLUMN has_double_zero INTEGER NOT NULL DEFAULT 1;");
+} catch(e) {}
+
+try {
+  db.exec("ALTER TABLE sessions ADD COLUMN wheel_numbers_json TEXT;");
 } catch(e) {}
 
 db.exec(`
@@ -58,7 +68,7 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'IDLE',
     prize_id TEXT,
     prize_snapshot_json TEXT,
-    winning_number INTEGER,
+    winning_number TEXT,
     winning_entry_id TEXT,
     applied_multiplier REAL DEFAULT 0,
     started_at TEXT,
@@ -74,7 +84,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     round_id TEXT NOT NULL,
-    number INTEGER NOT NULL,
+    number TEXT NOT NULL,
     player_token TEXT NOT NULL,
     nickname TEXT NOT NULL,
     bet_amount REAL NOT NULL DEFAULT 0,
@@ -112,6 +122,80 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_rounds_session ON rounds(session_id);
   CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id);
 `);
+
+// Safe migration of existing entries table from INTEGER number to TEXT number (supports '0' and '00')
+try {
+  const entriesInfo = db.prepare('PRAGMA table_info(entries)').all();
+  const numCol = entriesInfo.find((c) => c.name === 'number');
+  if (numCol && String(numCol.type).toUpperCase() === 'INTEGER') {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`
+      CREATE TABLE entries_migrated (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        round_id TEXT NOT NULL,
+        number TEXT NOT NULL,
+        player_token TEXT NOT NULL,
+        nickname TEXT NOT NULL,
+        bet_amount REAL NOT NULL DEFAULT 0,
+        payout_amount REAL NOT NULL DEFAULT 0,
+        claimed_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(round_id) REFERENCES rounds(id) ON DELETE CASCADE,
+        CONSTRAINT unique_round_number UNIQUE(round_id, number),
+        CONSTRAINT unique_round_player UNIQUE(round_id, player_token)
+      );
+      INSERT OR IGNORE INTO entries_migrated 
+        SELECT id, session_id, round_id, CAST(number AS TEXT), player_token, nickname, bet_amount, payout_amount, claimed_at, status 
+        FROM entries;
+      DROP TABLE entries;
+      ALTER TABLE entries_migrated RENAME TO entries;
+      CREATE INDEX IF NOT EXISTS idx_entries_round ON entries(round_id);
+    `);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+} catch (e) {
+  console.warn('[DB Migration Warning] entries table migration:', e.message);
+}
+
+// Safe migration of rounds table winning_number from INTEGER to TEXT
+try {
+  const roundsInfo = db.prepare('PRAGMA table_info(rounds)').all();
+  const winCol = roundsInfo.find((c) => c.name === 'winning_number');
+  if (winCol && String(winCol.type).toUpperCase() === 'INTEGER') {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`
+      CREATE TABLE rounds_migrated (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        round_number INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'IDLE',
+        prize_id TEXT,
+        prize_snapshot_json TEXT,
+        winning_number TEXT,
+        winning_entry_id TEXT,
+        applied_multiplier REAL DEFAULT 0,
+        started_at TEXT,
+        result_at TEXT,
+        cancelled_at TEXT,
+        cancel_reason TEXT,
+        idempotency_key TEXT,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(prize_id) REFERENCES prizes(id)
+      );
+      INSERT OR IGNORE INTO rounds_migrated 
+        SELECT id, session_id, round_number, status, prize_id, prize_snapshot_json, CAST(winning_number AS TEXT), winning_entry_id, applied_multiplier, started_at, result_at, cancelled_at, cancel_reason, idempotency_key 
+        FROM rounds;
+      DROP TABLE rounds;
+      ALTER TABLE rounds_migrated RENAME TO rounds;
+      CREATE INDEX IF NOT EXISTS idx_rounds_session ON rounds(session_id);
+    `);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+} catch (e) {
+  console.warn('[DB Migration Warning] rounds table migration:', e.message);
+}
 
 try {
   db.exec('ALTER TABLE entries ADD COLUMN bet_amount REAL NOT NULL DEFAULT 0;');

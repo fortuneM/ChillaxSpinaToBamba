@@ -385,6 +385,16 @@ app.post('/api/sessions/:id/mode', requireHostAuth, (req, res) => {
   res.json(result);
 });
 
+// POST /api/sessions/:id/wheel-config: Update wheel numbers configuration (Host)
+app.post('/api/sessions/:id/wheel-config', requireHostAuth, (req, res) => {
+  const { numberMax, hasDoubleZero, customNumbers } = req.body;
+  const result = engine.setWheelConfig(req.params.id, { numberMax, hasDoubleZero, customNumbers });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
 // POST /api/sessions/:id/spin: Trigger spin and select winner (Host)
 app.post('/api/sessions/:id/spin', requireHostAuth, (req, res) => {
   const idempotencyKey = req.headers['idempotency-key'] || req.body?.idempotencyKey;
@@ -397,8 +407,8 @@ app.post('/api/sessions/:id/spin', requireHostAuth, (req, res) => {
 
 // POST /api/sessions/:id/rounds: Create next round (Host)
 app.post('/api/sessions/:id/rounds', requireHostAuth, (req, res) => {
-  const { prizeId, numberMin, numberMax } = req.body;
-  const result = engine.createNextRound(req.params.id, { prizeId, numberMin, numberMax });
+  const { prizeId, numberMin, numberMax, hasDoubleZero } = req.body;
+  const result = engine.createNextRound(req.params.id, { prizeId, numberMin, numberMax, hasDoubleZero });
   if (!result.success) {
     return res.status(400).json(result);
   }

@@ -42,6 +42,9 @@ export function HostView() {
   const [selectedPrizeId, setSelectedPrizeId] = useState('');
   const [numberMin, setNumberMin] = useState(1);
   const [numberMax, setNumberMax] = useState(20);
+  const [hasDoubleZero, setHasDoubleZero] = useState(true);
+  const [nextRoundNumberMax, setNextRoundNumberMax] = useState(20);
+  const [nextRoundHasDoubleZero, setNextRoundHasDoubleZero] = useState(true);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState('');
   const [historyData, setHistoryData] = useState(null);
@@ -413,6 +416,20 @@ export function HostView() {
     setRedeemNotes('');
   };
 
+  // Update live wheel configuration (number range & 2 zeros 0 / 00)
+  const handleUpdateWheelConfig = async (newMax, newDoubleZero) => {
+    if (!session?.sessionId) return;
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/wheel-config`, 'POST', {
+      numberMax: parseInt(newMax, 10),
+      hasDoubleZero: Boolean(newDoubleZero)
+    });
+    if (data?.success) {
+      setNumberMax(parseInt(newMax, 10));
+      setNextRoundNumberMax(parseInt(newMax, 10));
+      setNextRoundHasDoubleZero(Boolean(newDoubleZero));
+    }
+  };
+
   // Next round
   const handleNextRound = async () => {
     setSelectedPickNum(null);
@@ -421,7 +438,8 @@ export function HostView() {
     await apiRequest(`/api/sessions/${session.sessionId}/rounds`, 'POST', {
       prizeId: selectedPrizeId,
       numberMin: parseInt(numberMin, 10),
-      numberMax: parseInt(numberMax, 10)
+      numberMax: parseInt(nextRoundNumberMax || numberMax, 10),
+      hasDoubleZero: Boolean(nextRoundHasDoubleZero)
     });
   };
 
@@ -441,7 +459,7 @@ export function HostView() {
     setIsAssigningPick(true);
     setHostPickFeedback('');
     const data = await apiRequest(`/api/sessions/${session.sessionId}/host-entries`, 'POST', {
-      number: num,
+      number: String(num),
       nickname: customName ? customName.trim() : '',
       betAmount: isCashRound ? numericBet : 0
     });
@@ -485,13 +503,13 @@ export function HostView() {
     if (session?.status !== 'REGISTRATION_OPEN' || isAssigningPick) return;
 
     if (existingEntry) {
-      setSelectedPickNum(selectedPickNum === num ? null : num);
+      setSelectedPickNum(String(selectedPickNum) === String(num) ? null : num);
       setHostPickFeedback('');
       return;
     }
 
     // If host already typed a player name or tapped the already-selected number again, assign immediately
-    if (walkInName.trim() || selectedPickNum === num) {
+    if (walkInName.trim() || String(selectedPickNum) === String(num)) {
       handleHostClaimNumber(num, walkInName);
     } else {
       setSelectedPickNum(num);
@@ -757,7 +775,7 @@ export function HostView() {
           </p>
 
           <div className="host-field-group">
-            <label>Number Range</label>
+            <label>Wheel Numbers Configuration</label>
             <div className="range-selector-row">
               <button
                 type="button"
@@ -779,6 +797,14 @@ export function HostView() {
                 onClick={() => { setNumberMin(1); setNumberMax(30); }}
               >
                 1 to 30
+              </button>
+              <button
+                type="button"
+                className={`range-pill ${hasDoubleZero ? 'active' : ''}`}
+                onClick={() => setHasDoubleZero((prev) => !prev)}
+                title="Include 0 and 00 on the wheel"
+              >
+                {hasDoubleZero ? '🟢 + 2 Zeros (0 & 00)' : '⚪ No Zeros'}
               </button>
             </div>
           </div>
@@ -1117,6 +1143,34 @@ export function HostView() {
                   </option>
                 ))}
               </select>
+
+              {/* Wheel Numbers Option for Next Round */}
+              <div className="next-round-wheel-config mb-3">
+                <label className="text-muted text-xs block mb-1 uppercase font-bold">
+                  🎡 Choose Wheel Numbers for Round #{ (currentRound?.roundNumber || 1) + 1 }:
+                </label>
+                <div className="wheel-presets-row">
+                  {[10, 15, 20, 30].map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      onClick={() => setNextRoundNumberMax(count)}
+                      className={`wheel-preset-pill ${nextRoundNumberMax === count ? 'active' : ''}`}
+                    >
+                      {count} Numbers
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setNextRoundHasDoubleZero((prev) => !prev)}
+                    className={`wheel-zero-toggle-btn ${nextRoundHasDoubleZero ? 'active' : ''}`}
+                    title="Toggle 2 Zeros (0 & 00)"
+                  >
+                    {nextRoundHasDoubleZero ? '🟢 2 Zeros (0 & 00) ON' : '⚪ 2 Zeros OFF'}
+                  </button>
+                </div>
+              </div>
+
               <button onClick={handleNextRound} className="arcade-btn-primary w-full">
                 <RotateCcw size={18} className="inline-icon" /> Start Round #{ (currentRound?.roundNumber || 1) + 1 }
               </button>
@@ -1129,12 +1183,42 @@ export function HostView() {
       <div className="host-claimed-grid-card">
         <div className="grid-card-header">
           <div className="flex justify-between items-center">
-            <h4>Wheel Numbers & Player Picks ({session.playerCount}/{session.numberRange.max} Claimed)</h4>
+            <h4>Wheel Numbers &amp; Player Picks ({session.playerCount}/{session.wheelNumbers?.length || session.numberRange.max} Pockets)</h4>
             {isCashRound && (
               <span className="host-pool-badge">
                 Pool: R{session.totalBets || 0}
               </span>
             )}
+          </div>
+
+          {/* Live Wheel Numbers Chooser */}
+          <div className="host-wheel-config-bar">
+            <div className="wheel-config-label">
+              <span className="text-muted font-bold text-xs uppercase">🎡 Wheel Numbers:</span>
+            </div>
+            <div className="wheel-presets-row">
+              {[10, 15, 20, 30].map((count) => (
+                <button
+                  key={count}
+                  type="button"
+                  disabled={status !== 'REGISTRATION_OPEN'}
+                  onClick={() => handleUpdateWheelConfig(count, session.hasDoubleZero !== false)}
+                  className={`wheel-preset-pill ${(session.numberRange.max === count) ? 'active' : ''}`}
+                  title={`Set wheel to 1–${count} ${session.hasDoubleZero !== false ? '+ 2 Zeros (0 & 00)' : ''}`}
+                >
+                  {count} Numbers
+                </button>
+              ))}
+              <button
+                type="button"
+                disabled={status !== 'REGISTRATION_OPEN'}
+                onClick={() => handleUpdateWheelConfig(session.numberRange.max, !session.hasDoubleZero)}
+                className={`wheel-zero-toggle-btn ${session.hasDoubleZero !== false ? 'active' : ''}`}
+                title="Toggle 2 Zeros (0 and 00) on the wheel"
+              >
+                {session.hasDoubleZero !== false ? '🟢 2 Zeros (0 & 00) ON' : '⚪ 2 Zeros OFF'}
+              </button>
+            </div>
           </div>
           {status === 'REGISTRATION_OPEN' && (
             <span className="host-grid-subtitle">
@@ -1265,13 +1349,15 @@ export function HostView() {
         )}
 
         <div className="host-number-chips-grid">
-          {Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => {
-            const num = session.numberRange.min + i;
-            const entry = session.entries?.find(e => e.number === num);
-            const isWinner = isResult && currentRound?.winningNumber === num;
-            const isSelected = selectedPickNum === num;
+          {(session.wheelNumbers || [
+            '0', '00', ...Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => String(session.numberRange.min + i))
+          ]).map((num) => {
+            const entry = session.entries?.find(e => String(e.number) === String(num));
+            const isWinner = isResult && String(currentRound?.winningNumber) === String(num);
+            const isSelected = String(selectedPickNum) === String(num);
             const isHostPick = entry?.player_token?.startsWith('host_pick_');
             const isInteractive = status === 'REGISTRATION_OPEN';
+            const isZero = String(num) === '0' || String(num) === '00';
 
             return (
               <button
@@ -1279,7 +1365,7 @@ export function HostView() {
                 type="button"
                 disabled={!isInteractive || isAssigningPick}
                 onClick={() => handleChipClick(num, entry)}
-                className={`host-num-chip ${entry ? 'claimed' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive ? 'interactive' : ''}`}
+                className={`host-num-chip ${isZero ? 'zero-chip' : ''} ${entry ? 'claimed' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive ? 'interactive' : ''}`}
               >
                 <div className="chip-top-row">
                   <span className="chip-num">{num}</span>
@@ -1319,7 +1405,7 @@ export function HostView() {
               await apiRequest(`/api/sessions/${session.sessionId}/mode`, 'POST', { mode: 'TRUE_ODDS' });
             }}
           >
-            🎯 Hard (1 in {session.numberRange.max} Odds)
+            🎯 Hard (1 in {session.wheelNumbers?.length || session.numberRange.max} Odds)
           </button>
           <button
             type="button"
@@ -1332,7 +1418,7 @@ export function HostView() {
           </button>
         </div>
         <p className="text-xs text-muted mt-1">
-          In <strong>Hard Mode</strong>, the wheel spins across all numbers (1–{session.numberRange.max}). If it lands on an unclaimed number, there is NO WINNER.
+          In <strong>Hard Mode</strong>, the wheel spins across all {session.wheelNumbers?.length || session.numberRange.max} pockets{session.hasDoubleZero !== false ? ' (including 0 & 00)' : ''}. If it lands on an unclaimed number, there is NO WINNER.
         </p>
       </div>
 

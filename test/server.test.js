@@ -161,7 +161,7 @@ async function runTests() {
   engine.setWinnerMode(session.sessionId, 'GUARANTEED');
   const spinRes = engine.spin(session.sessionId, { idempotencyKey: 'idemp_key_101' });
   assert.strictEqual(spinRes.success, true, 'Spin should succeed');
-  assert([3, 7, 12, 15].includes(spinRes.winningNumber), 'In guaranteed mode, winning number must be among claimed numbers');
+  assert(['3', '7', '12', '15'].includes(String(spinRes.winningNumber)), 'In guaranteed mode, winning number must be among claimed numbers');
 
   // Duplicate spin request with same idempotency key
   const dupSpin = engine.spin(session.sessionId, { idempotencyKey: 'idemp_key_101' });
@@ -261,7 +261,7 @@ async function runTests() {
   engine.closeRegistration(session.sessionId);
   const cashSpinRes = engine.spin(session.sessionId, { idempotencyKey: 'cash_spin_1' });
   assert.strictEqual(cashSpinRes.success, true, 'Cash spin should succeed');
-  assert.strictEqual(cashSpinRes.winningNumber, 9, 'Engine should select the affordable R10 bet (#9) to protect house profit');
+  assert.strictEqual(String(cashSpinRes.winningNumber), '9', 'Engine should select the affordable R10 bet (#9) to protect house profit');
   assert([1.5, 2].includes(cashSpinRes.appliedMultiplier), 'Engine must choose 1.5x or 2x and lock 3x when reserve is low');
   assert.strictEqual(cashSpinRes.winnerPayoutAmount, 10 * cashSpinRes.appliedMultiplier);
 
@@ -325,7 +325,46 @@ async function runTests() {
   assert(engine.findSessionByCode('2855'), 'Should find session by 4-digit Shop Code suffix 2855');
   console.log('  ✅ Chillax Gaming App synced login & linked Shop Code passed');
 
-  console.log('\n🎉 ALL 13 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 14. Wheel Numbers Configuration & 2 Zeros (0 & 00)
+  console.log('Test 14: Wheel Numbers Selection & 2 Zeros (0 & 00)');
+  const wheelSnap = engine.getSessionSnapshot(session.sessionId);
+  assert(wheelSnap.wheelNumbers.includes('0'), 'Wheel numbers must include single zero "0"');
+  assert(wheelSnap.wheelNumbers.includes('00'), 'Wheel numbers must include double zero "00"');
+  assert.strictEqual(wheelSnap.wheelNumbers[0], '0');
+  assert.strictEqual(wheelSnap.wheelNumbers[1], '00');
+
+  // Create a new round on session to test claiming 0 and 00
+  const rZerosRes = engine.createNextRound(session.sessionId, { prizeId: 'prize_1', numberMax: 10, hasDoubleZero: true });
+  assert.strictEqual(rZerosRes.success, true);
+  const snapZeros = engine.getSessionSnapshot(session.sessionId);
+  assert.strictEqual(snapZeros.numberRange.max, 10);
+  assert.strictEqual(snapZeros.wheelNumbers.length, 12, '10 numbers + 2 zeros = 12 wheel pockets');
+
+  // Claim '0' as player
+  const claim0 = engine.claimNumber(session.sessionId, {
+    number: '0',
+    playerToken: 'tok_zero_player',
+    nickname: 'ZeroHero'
+  });
+  assert.strictEqual(claim0.success, true, 'Should successfully claim single zero "0"');
+  assert.strictEqual(claim0.number, '0');
+
+  // Claim '00' as host walk-in
+  const claim00 = engine.hostClaimNumber(session.sessionId, {
+    number: '00',
+    nickname: 'DoubleZeroFan'
+  });
+  assert.strictEqual(claim00.success, true, 'Should successfully claim double zero "00"');
+  assert.strictEqual(claim00.number, '00');
+
+  // Changing wheel config updates live pockets
+  const updateCfg = engine.setWheelConfig(session.sessionId, { numberMax: 30, hasDoubleZero: true });
+  assert.strictEqual(updateCfg.success, true);
+  assert.strictEqual(updateCfg.snapshot.wheelNumbers.length, 32, '30 numbers + 2 zeros = 32 wheel pockets');
+
+  console.log('  ✅ Wheel numbers selection & 2 zeros (0 & 00) passed');
+
+  console.log('\n🎉 ALL 14 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

@@ -1682,6 +1682,102 @@ body {
   max-width: 100%;
 }
 
+/* Wheel Numbers Chooser Bar */
+.host-wheel-config-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: rgba(7, 13, 30, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.35rem;
+}
+
+.wheel-presets-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.wheel-preset-pill {
+  background: #070d1e;
+  border: 1px solid rgba(0, 242, 254, 0.3);
+  color: #94a3b8;
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.3rem 0.55rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.wheel-preset-pill:hover:not(:disabled) {
+  color: #fff;
+  border-color: var(--neon-cyan);
+}
+
+.wheel-preset-pill.active {
+  background: rgba(0, 242, 254, 0.22);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 242, 254, 0.3);
+}
+
+.wheel-zero-toggle-btn {
+  background: #070d1e;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #a7f3d0;
+  font-family: var(--font-arcade);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.3rem 0.55rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.wheel-zero-toggle-btn.active {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: #10b981;
+  color: #34d399;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.35);
+}
+
+/* Emerald Zero Chips (0 & 00) for Roulette / Wheel Pockets */
+.host-num-chip.zero-chip {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.host-num-chip.zero-chip .chip-num {
+  color: #34d399;
+  text-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
+
+.host-num-chip.zero-chip.empty.interactive:hover {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: #34d399;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+}
+
+.player-grid-btn.zero-chip {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.player-grid-btn.zero-chip .btn-num {
+  color: #34d399;
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+}
+
+.player-grid-btn.zero-chip:hover:not(:disabled) {
+  border-color: #34d399;
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.45);
+}
+
 /* History Modal */
 .host-modal-overlay {
   position: fixed;

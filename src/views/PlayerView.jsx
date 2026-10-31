@@ -63,7 +63,7 @@ export function PlayerView() {
       // If we just entered result state and player won, trigger celebratory confetti
       if (newState.status === 'RESULT') {
         const myClaim = newState.entries?.find(e => e.player_token === playerToken);
-        if (myClaim && myClaim.number === newState.currentRound?.winningNumber) {
+        if (myClaim && String(myClaim.number) === String(newState.currentRound?.winningNumber)) {
           triggerPlayerConfetti();
           sounds.playFanfare();
         }
@@ -443,12 +443,12 @@ export function PlayerView() {
         </div>
 
         <div className="player-number-grid">
-          {Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => {
-            const num = session.numberRange.min + i;
-            const entry = session.entries?.find((e) => e.number === num);
-            const isMyPick = myClaimedNumber === num;
+          {(session.wheelNumbers || Array.from({ length: session.numberRange.max - session.numberRange.min + 1 }).map((_, i) => String(session.numberRange.min + i))).map((num) => {
+            const entry = session.entries?.find((e) => String(e.number) === String(num));
+            const isMyPick = String(myClaimedNumber) === String(num);
             const isTaken = Boolean(entry && !isMyPick);
             const isLocked = status !== 'REGISTRATION_OPEN';
+            const isZero = String(num) === '0' || String(num) === '00';
 
             return (
               <button
@@ -456,7 +456,7 @@ export function PlayerView() {
                 type="button"
                 disabled={isTaken || isLocked || isClaiming}
                 onClick={() => handleClaimNumber(num)}
-                className={`player-grid-btn ${isMyPick ? 'my-pick' : ''} ${isTaken ? 'taken' : 'available'}`}
+                className={`player-grid-btn ${isZero ? 'zero-chip' : ''} ${isMyPick ? 'my-pick' : ''} ${isTaken ? 'taken' : 'available'}`}
               >
                 <span className="btn-num">{num}</span>
                 <span className="btn-state-label">

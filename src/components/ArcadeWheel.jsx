@@ -16,6 +16,7 @@ const SEGMENT_COLORS = [
 ];
 
 export function ArcadeWheel({
+  wheelNumbers = null,
   min = 1,
   max = 20,
   claimedNumbers = [],
@@ -28,7 +29,18 @@ export function ArcadeWheel({
   const currentRotationRef = useRef(0);
   const isCurrentlySpinningRef = useRef(false);
 
-  const totalSegments = Math.max(1, max - min + 1);
+  const numbers = useMemo(() => {
+    if (Array.isArray(wheelNumbers) && wheelNumbers.length > 0) {
+      return wheelNumbers.map(String);
+    }
+    const list = ['0', '00'];
+    for (let i = min; i <= max; i++) {
+      list.push(String(i));
+    }
+    return list;
+  }, [wheelNumbers, min, max]);
+
+  const totalSegments = Math.max(1, numbers.length);
   const segmentAngle = 360 / totalSegments;
 
   // Wheel dimensions
@@ -37,25 +49,38 @@ export function ArcadeWheel({
   const outerRimRadius = radius - 8;
   const innerTrackRadius = outerRimRadius - 22;
 
-  // Generate segments data with perfect alignment
+  // Generate segments data with perfect alignment & emerald green 0 / 00 slots
   // Slice k center is at angle (k * segmentAngle) clockwise from top (12 o'clock)
   const segments = useMemo(() => {
     const list = [];
+    let colorIndex = 0;
     for (let i = 0; i < totalSegments; i++) {
-      const num = min + i;
-      const isClaimed = claimedNumbers.includes(num);
-      const isWinner = winningNumber === num;
-      const color = SEGMENT_COLORS[i % SEGMENT_COLORS.length];
+      const num = numbers[i];
+      const isClaimed = claimedNumbers.some((c) => String(c) === String(num));
+      const isWinner = winningNumber !== null && String(winningNumber) === String(num);
+      const isZero = String(num) === '0' || String(num) === '00';
+
+      let color;
+      if (String(num) === '0') {
+        color = '#10b981'; // Vibrant Emerald 0
+      } else if (String(num) === '00') {
+        color = '#059669'; // Deep Forest 00
+      } else {
+        color = SEGMENT_COLORS[colorIndex % SEGMENT_COLORS.length];
+        colorIndex++;
+      }
+
       list.push({
         index: i,
         number: num,
+        isZero,
         isClaimed,
         isWinner,
         color
       });
     }
     return list;
-  }, [min, totalSegments, claimedNumbers, winningNumber]);
+  }, [numbers, totalSegments, claimedNumbers, winningNumber]);
 
   // Handle spin trigger
   useEffect(() => {
@@ -64,8 +89,9 @@ export function ArcadeWheel({
       sounds.startSpinSounds(spinDurationMs);
 
       // Slice k is centered at angle (k * segmentAngle) clockwise from 12 o'clock
-      const winningIndex = winningNumber - min;
-      const targetSliceCenterAngle = winningIndex * segmentAngle;
+      const winningIdx = numbers.findIndex((n) => String(n) === String(winningNumber));
+      const safeIdx = winningIdx >= 0 ? winningIdx : 0;
+      const targetSliceCenterAngle = safeIdx * segmentAngle;
 
       // To bring targetSliceCenterAngle to top (0 deg / 12 o'clock),
       // we need: (finalRotation + targetSliceCenterAngle) % 360 === 0
@@ -94,7 +120,7 @@ export function ArcadeWheel({
 
       return () => clearTimeout(timer);
     }
-  }, [isSpinning, winningNumber, min, segmentAngle, spinDurationMs, onSpinComplete]);
+  }, [isSpinning, winningNumber, numbers, segmentAngle, spinDurationMs, onSpinComplete]);
 
   // Create SVG slice path centered on slice k
   // In standard SVG math (0 deg = 3 o'clock):
@@ -231,7 +257,7 @@ export function ArcadeWheel({
                       dominantBaseline="central"
                       fill="#ffffff"
                       fontWeight="900"
-                      fontSize={totalSegments > 20 ? '22' : '28'}
+                      fontSize={totalSegments > 24 ? '19' : totalSegments > 20 ? '23' : '28'}
                       fontFamily="Orbitron, sans-serif"
                       stroke="#070d1e"
                       strokeWidth="4"

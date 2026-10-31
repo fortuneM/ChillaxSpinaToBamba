@@ -37,6 +37,18 @@ export function generatePairingCode() {
   return String(crypto.randomInt(1000, 9999));
 }
 
+// Generate authoritative wheel numbers array (e.g. ['0', '00', '1'..'N'])
+export function buildWheelNumbers({ min = 1, max = 20, hasDoubleZero = true } = {}) {
+  const list = [];
+  if (hasDoubleZero) {
+    list.push('0', '00');
+  }
+  for (let i = min; i <= max; i++) {
+    list.push(String(i));
+  }
+  return list;
+}
+
 export class GameEngine {
   constructor(io) {
     this.io = io;
@@ -184,12 +196,9 @@ export class GameEngine {
       winningNumber = winningEntry.number;
     } else {
       // TRUE_ODDS with Profit Protection & Player Attraction ("Hot-Drop") logic
-      const allWheelNums = [];
-      for (let n = session.number_min; n <= session.number_max; n++) {
-        allWheelNums.push(n);
-      }
-      const claimedSet = new Set(entries.map(e => e.number));
-      const unclaimedNums = allWheelNums.filter(n => !claimedSet.has(n));
+      const allWheelNums = this.getWheelNumbers(session);
+      const claimedSet = new Set(entries.map(e => String(e.number)));
+      const unclaimedNums = allWheelNums.filter(n => !claimedSet.has(String(n)));
 
       // Player Magnet: if 2+ consecutive no-winner rounds or rich surplus, boost chance of an affordable win
       const shouldBoostAttraction = safeEntries.length > 0 && (
@@ -202,8 +211,8 @@ export class GameEngine {
         winningNumber = winningEntry.number;
       } else {
         // Standard wheel roll with profit-guard interception
-        const rawNumber = crypto.randomInt(session.number_min, session.number_max + 1);
-        const rawEntry = entries.find(e => e.number === rawNumber) || null;
+        const rawNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
+        const rawEntry = entries.find(e => String(e.number) === String(rawNumber)) || null;
 
         if (!rawEntry) {
           winningNumber = rawNumber;
@@ -289,6 +298,91 @@ export class GameEngine {
     };
   }
 
+  // Resolve authoritative wheel numbers array for a session
+  getWheelNumbers(session) {
+    if (!session) return buildWheelNumbers({ min: 1, max: 20, hasDoubleZero: true });
+
+    if (session.wheel_numbers_json) {
+      try {
+        const parsed = JSON.parse(session.wheel_numbers_json);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(String);
+        }
+      } catch {}
+    }
+
+    let settings = {};
+    if (session.settings_json) {
+      try {
+        settings = JSON.parse(session.settings_json);
+      } catch {}
+    }
+    if (Array.isArray(settings.wheelNumbers) && settings.wheelNumbers.length > 0) {
+      return settings.wheelNumbers.map(String);
+    }
+
+    const hasDoubleZero = session.has_double_zero !== 0 && settings.hasDoubleZero !== false;
+    const min = Number(session.number_min) || 1;
+    const max = Number(session.number_max) || 20;
+
+    return buildWheelNumbers({ min, max, hasDoubleZero });
+  }
+
+  // Update wheel numbers configuration (e.g. 10, 15, 20, 30 pockets and 0 & 00 toggle)
+  setWheelConfig(sessionId, { numberMax = null, hasDoubleZero = null, customNumbers = null }) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return { success: false, status: 404, error: 'Session not found.' };
+
+    let validMax = session.number_max || 20;
+    if (numberMax !== null && numberMax !== undefined) {
+      const parsed = parseInt(numberMax, 10);
+      if (!isNaN(parsed) && parsed >= 5 && parsed <= 50) {
+        validMax = parsed;
+      }
+    }
+
+    const useDoubleZero = hasDoubleZero !== null && hasDoubleZero !== undefined
+      ? (hasDoubleZero ? 1 : 0)
+      : (session.has_double_zero !== 0 ? 1 : 0);
+
+    let wheelNumbersJson = null;
+    if (Array.isArray(customNumbers) && customNumbers.length > 0) {
+      wheelNumbersJson = JSON.stringify(customNumbers.map(String));
+    } else {
+      wheelNumbersJson = JSON.stringify(
+        buildWheelNumbers({ min: session.number_min || 1, max: validMax, hasDoubleZero: Boolean(useDoubleZero) })
+      );
+    }
+
+    let settings = {};
+    try {
+      settings = session.settings_json ? JSON.parse(session.settings_json) : {};
+    } catch {}
+    settings.hasDoubleZero = Boolean(useDoubleZero);
+    settings.numberMax = validMax;
+
+    db.prepare(`
+      UPDATE sessions 
+      SET number_max = ?, 
+          has_double_zero = ?, 
+          wheel_numbers_json = ?,
+          settings_json = ?
+      WHERE id = ?
+    `).run(validMax, useDoubleZero, wheelNumbersJson, JSON.stringify(settings), sessionId);
+
+    this.syncSessionToMongo(sessionId);
+    logAudit(sessionId, 'HOST', 'host', 'WHEEL_CONFIG_UPDATED', {
+      numberMax: validMax,
+      hasDoubleZero: Boolean(useDoubleZero)
+    });
+
+    const snapshot = this.broadcastSessionState(sessionId);
+    return {
+      success: true,
+      snapshot
+    };
+  }
+
   // Guarantee that an existing session always has at least one active round
   ensureCurrentRound(sessionId) {
     if (!sessionId) return null;
@@ -355,7 +449,8 @@ export class GameEngine {
       }
     }
 
-    const claimedNumbers = entries.map(e => e.number);
+    const wheelNumbers = this.getWheelNumbers(session);
+    const claimedNumbers = entries.map(e => String(e.number));
     const totalBets = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
     const isCashRound = prize?.prize_type === 'cash_multiplier';
     const houseCashStats = this.getHouseCashStats(sessionId);
@@ -383,9 +478,12 @@ export class GameEngine {
       shopName: sessionSettings.shopName || matchedShop?.name || null,
       shopCode: sessionSettings.shopCode || matchedShop?.shopCode || session.short_code,
       status: currentRound ? currentRound.status : session.status,
+      wheelNumbers,
+      hasDoubleZero: session.has_double_zero !== 0,
       numberRange: {
         min: session.number_min,
-        max: session.number_max
+        max: session.number_max,
+        totalSlots: wheelNumbers.length
       },
       winnerMode: session.winner_mode || 'TRUE_ODDS',
       playerCount: entries.length,
@@ -665,9 +763,14 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Registration is closed for this round.' };
     }
 
-    const num = parseInt(number, 10);
-    if (isNaN(num) || num < session.number_min || num > session.number_max) {
-      return { success: false, status: 400, error: `Number must be between ${session.number_min} and ${session.number_max}.` };
+    const cleanNum = String(number ?? '').trim();
+    const validWheelNums = this.getWheelNumbers(session);
+    if (!cleanNum || !validWheelNums.includes(cleanNum)) {
+      return {
+        success: false,
+        status: 400,
+        error: `Number #${cleanNum} is not on the active wheel (${validWheelNums.join(', ')}).`
+      };
     }
 
     const prize = currentRound.prize_id
@@ -702,7 +805,7 @@ export class GameEngine {
       `).get(currentRound.id, playerToken);
 
       if (existingPlayerEntry) {
-        if (existingPlayerEntry.number === num) {
+        if (String(existingPlayerEntry.number) === cleanNum) {
           if (isCashRound && existingPlayerEntry.bet_amount !== cleanBetAmount) {
             db.prepare(`
               UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ? WHERE id = ?
@@ -711,17 +814,17 @@ export class GameEngine {
             this.broadcastSessionState(sessionId);
             return {
               success: true,
-              number: num,
+              number: cleanNum,
               nickname: cleanNickname,
               betAmount: cleanBetAmount,
               payoutAmount: cleanPayoutAmount,
-              message: `Updated your bet on #${num} to R${cleanBetAmount} (Win R${cleanPayoutAmount})!`
+              message: `Updated your bet on #${cleanNum} to R${cleanBetAmount} (Win R${cleanPayoutAmount})!`
             };
           }
           // Already owns this number
           return {
             success: true,
-            number: num,
+            number: cleanNum,
             nickname: cleanNickname,
             betAmount: cleanBetAmount,
             payoutAmount: cleanPayoutAmount,
@@ -740,7 +843,7 @@ export class GameEngine {
           db.prepare(`
             INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-          `).run(newEntryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+          `).run(newEntryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
 
           db.exec('COMMIT;');
         } catch (txErr) {
@@ -755,12 +858,12 @@ export class GameEngine {
         db.prepare(`
           INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-        `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+        `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
         this.syncEntryToMongo(entryId);
       }
 
       logAudit(sessionId, 'PLAYER', playerToken, 'NUMBER_CLAIMED', {
-        number: num,
+        number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount
@@ -768,7 +871,7 @@ export class GameEngine {
 
       // Broadcast update
       this.io.to(sessionId).emit('entry:claimed', {
-        number: num,
+        number: cleanNum,
         nickname: cleanNickname,
         playerToken,
         betAmount: cleanBetAmount,
@@ -778,14 +881,14 @@ export class GameEngine {
 
       return {
         success: true,
-        number: num,
+        number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount
       };
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE constraint failed')) {
-        return { success: false, status: 409, error: `Number #${num} was just claimed by someone else!` };
+        return { success: false, status: 409, error: `Number #${cleanNum} was just claimed by someone else!` };
       }
       return { success: false, status: 500, error: 'Database claim error: ' + err.message };
     }
@@ -808,9 +911,14 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Registration is closed for this round.' };
     }
 
-    const num = parseInt(number, 10);
-    if (isNaN(num) || num < session.number_min || num > session.number_max) {
-      return { success: false, status: 400, error: `Number must be between ${session.number_min} and ${session.number_max}.` };
+    const cleanNum = String(number ?? '').trim();
+    const validWheelNums = this.getWheelNumbers(session);
+    if (!cleanNum || !validWheelNums.includes(cleanNum)) {
+      return {
+        success: false,
+        status: 400,
+        error: `Number #${cleanNum} is not on the active wheel (${validWheelNums.join(', ')}).`
+      };
     }
 
     const prize = currentRound.prize_id
@@ -835,32 +943,32 @@ export class GameEngine {
     }
 
     const rawNickname = String(nickname || '').trim().slice(0, 18).replace(/[<>]/g, '');
-    const cleanNickname = rawNickname || `Player #${num}`;
+    const cleanNickname = rawNickname || `Player #${cleanNum}`;
 
     try {
       const existingEntry = db.prepare(`
         SELECT * FROM entries WHERE round_id = ? AND number = ? AND status = 'ACTIVE'
-      `).get(currentRound.id, num);
+      `).get(currentRound.id, cleanNum);
 
       if (existingEntry) {
         return {
           success: false,
           status: 409,
-          error: `Number #${num} is already claimed by ${existingEntry.nickname}!`
+          error: `Number #${cleanNum} is already claimed by ${existingEntry.nickname}!`
         };
       }
 
-      const playerToken = 'host_pick_' + num + '_' + crypto.randomBytes(4).toString('hex');
+      const playerToken = 'host_pick_' + cleanNum + '_' + crypto.randomBytes(4).toString('hex');
       const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
 
       db.prepare(`
         INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-      `).run(entryId, sessionId, currentRound.id, num, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+      `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
       this.syncEntryToMongo(entryId);
 
       logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_CLAIMED', {
-        number: num,
+        number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
@@ -868,7 +976,7 @@ export class GameEngine {
       });
 
       this.io.to(sessionId).emit('entry:claimed', {
-        number: num,
+        number: cleanNum,
         nickname: cleanNickname,
         playerToken,
         betAmount: cleanBetAmount,
@@ -879,7 +987,7 @@ export class GameEngine {
 
       return {
         success: true,
-        number: num,
+        number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
@@ -888,7 +996,7 @@ export class GameEngine {
       };
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE constraint failed')) {
-        return { success: false, status: 409, error: `Number #${num} was just claimed by someone else!` };
+        return { success: false, status: 409, error: `Number #${cleanNum} was just claimed by someone else!` };
       }
       return { success: false, status: 500, error: 'Database claim error: ' + err.message };
     }
@@ -911,27 +1019,27 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Cannot remove picks after registration is closed.' };
     }
 
-    const num = parseInt(number, 10);
+    const cleanNum = String(number ?? '').trim();
     const existingEntry = db.prepare(`
       SELECT * FROM entries WHERE round_id = ? AND number = ? AND status = 'ACTIVE'
-    `).get(currentRound.id, num);
+    `).get(currentRound.id, cleanNum);
 
     if (!existingEntry) {
-      return { success: false, status: 404, error: `Number #${num} is not currently claimed.` };
+      return { success: false, status: 404, error: `Number #${cleanNum} is not currently claimed.` };
     }
 
     db.prepare('DELETE FROM entries WHERE id = ?').run(existingEntry.id);
     deleteRecordFromMongo('entries', existingEntry.id);
 
     logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_UNCLAIMED', {
-      number: num,
+      number: cleanNum,
       previousNickname: existingEntry.nickname
     });
 
     this.broadcastSessionState(sessionId);
     return {
       success: true,
-      number: num,
+      number: cleanNum,
       removedNickname: existingEntry.nickname
     };
   }
@@ -1052,8 +1160,9 @@ export class GameEngine {
     } else {
       // Default: TRUE_ODDS (Hard arcade challenge: selection across ALL numbers in wheel range!)
       // If the wheel lands on an unclaimed number, there is NO WINNER this round!
-      winningNumber = crypto.randomInt(session.number_min, session.number_max + 1);
-      winningEntry = entries.find(e => e.number === winningNumber) || null;
+      const allWheelNums = this.getWheelNumbers(session);
+      winningNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
+      winningEntry = entries.find(e => String(e.number) === String(winningNumber)) || null;
     }
 
     const spinDurationMs = 5000; // 5.0s fast high-energy arcade spin
@@ -1220,8 +1329,8 @@ export class GameEngine {
     return { success: true, winnerMode: chosenMode };
   }
 
-  // Create next round
-  createNextRound(sessionId, { prizeId = null, numberMin = null, numberMax = null }) {
+  // Create next round (supports updating wheel numbers and double zero option)
+  createNextRound(sessionId, { prizeId = null, numberMin = null, numberMax = null, hasDoubleZero = null }) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) return { success: false, error: 'Session not found.' };
 
@@ -1232,11 +1341,27 @@ export class GameEngine {
     const nextRoundNumber = lastRound ? lastRound.round_number + 1 : 1;
     const roundId = 'rnd_' + crypto.randomBytes(6).toString('hex');
 
-    // Update session number range if host adjusted it
-    if (numberMin !== null || numberMax !== null) {
+    // Update session number range / double zero if host adjusted it
+    if (numberMin !== null || numberMax !== null || hasDoubleZero !== null) {
+      const newMin = numberMin !== null ? (parseInt(numberMin, 10) || 1) : (session.number_min || 1);
+      const newMax = numberMax !== null ? (parseInt(numberMax, 10) || 20) : (session.number_max || 20);
+      const newDz = hasDoubleZero !== null ? (hasDoubleZero ? 1 : 0) : (session.has_double_zero !== 0 ? 1 : 0);
+      const wheelJson = JSON.stringify(buildWheelNumbers({ min: newMin, max: newMax, hasDoubleZero: Boolean(newDz) }));
+
+      let settings = {};
+      try { settings = session.settings_json ? JSON.parse(session.settings_json) : {}; } catch {}
+      settings.hasDoubleZero = Boolean(newDz);
+      settings.numberMax = newMax;
+
       db.prepare(`
-        UPDATE sessions SET number_min = COALESCE(?, number_min), number_max = COALESCE(?, number_max) WHERE id = ?
-      `).run(numberMin, numberMax, sessionId);
+        UPDATE sessions 
+        SET number_min = ?, 
+            number_max = ?, 
+            has_double_zero = ?, 
+            wheel_numbers_json = ?,
+            settings_json = ?
+        WHERE id = ?
+      `).run(newMin, newMax, newDz, wheelJson, JSON.stringify(settings), sessionId);
     }
 
     let selectedPrizeId = prizeId || (lastRound ? lastRound.prize_id : null);

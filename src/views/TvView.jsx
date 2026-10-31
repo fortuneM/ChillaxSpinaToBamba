@@ -325,6 +325,7 @@ export function TvView() {
         {/* Center Arena: Wheel Display */}
         <section className="tv-wheel-stage">
           <ArcadeWheel
+            wheelNumbers={session.wheelNumbers}
             min={session.numberRange.min}
             max={session.numberRange.max}
             claimedNumbers={session.claimedNumbers || []}
