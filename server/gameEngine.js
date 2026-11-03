@@ -56,6 +56,18 @@ export function buildWheelNumbers({ min = 1, max = 20, hasDoubleZero = true } = 
   return ['0', ...firstHalf, '00', ...secondHalf];
 }
 
+// Normalize wheel pocket identifiers (handles '10.0' from DB/Mongo -> '10', preserves '0' and '00')
+export function normalizeWheelNumber(val) {
+  if (val === null || val === undefined) return '';
+  const s = String(val).trim();
+  if (s === '00' || s === '0') return s;
+  const num = Number(s);
+  if (!Number.isNaN(num) && Number.isInteger(num)) {
+    return String(num);
+  }
+  return s;
+}
+
 export class GameEngine {
   constructor(io) {
     this.io = io;
@@ -200,49 +212,40 @@ export class GameEngine {
         const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
         winningEntry = sortedByBet[0];
       }
-      winningNumber = winningEntry.number;
+      winningNumber = normalizeWheelNumber(winningEntry.number);
     } else {
-      // TRUE_ODDS with Profit Protection & Player Attraction ("Hot-Drop") logic
+      // TRUE_ODDS (Hard arcade challenge: authentic random spin across ALL pockets in wheel range!)
+      // If the wheel lands on an unclaimed number, there is NO WINNER this round!
       const allWheelNums = this.getWheelNumbers(session);
-      const claimedSet = new Set(entries.map(e => String(e.number)));
-      const unclaimedNums = allWheelNums.filter(n => !claimedSet.has(String(n)));
+      const claimedMap = new Map(entries.map(e => [normalizeWheelNumber(e.number), e]));
+      const unclaimedNums = allWheelNums.filter(n => !claimedMap.has(normalizeWheelNumber(n)));
 
-      // Player Magnet: if 2+ consecutive no-winner rounds or rich surplus, boost chance of an affordable win
-      const shouldBoostAttraction = safeEntries.length > 0 && (
-        stats.consecutiveNoWinners >= 2 ||
-        (stats.surplusReserve >= 25 && crypto.randomInt(0, 100) < 40)
-      );
+      // Authentic physical spin across all numbers on the wheel
+      const rawNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
+      const rawEntry = claimedMap.get(normalizeWheelNumber(rawNumber)) || null;
 
-      if (shouldBoostAttraction) {
-        winningEntry = pickWeightedEntry(safeEntries);
-        winningNumber = winningEntry.number;
+      if (!rawEntry) {
+        // Natural roll landed on an unclaimed pocket -> NO WINNER (house keeps wagers)
+        winningNumber = normalizeWheelNumber(rawNumber);
+        winningEntry = null;
       } else {
-        // Standard wheel roll with profit-guard interception
-        const rawNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
-        const rawEntry = entries.find(e => String(e.number) === String(rawNumber)) || null;
+        // Natural roll landed on a player's number! Check house profit guard
+        const isSafe = (Number(rawEntry.bet_amount) * 1.5) <= maxSafePayout;
+        const isBreakEven = (Number(rawEntry.bet_amount) * 1.5) <= maxBreakEvenPayout;
 
-        if (!rawEntry) {
-          winningNumber = rawNumber;
+        if (isSafe || isBreakEven) {
+          // Payout is within safe / break-even limits: player legitimately wins!
+          winningNumber = normalizeWheelNumber(rawNumber);
+          winningEntry = rawEntry;
+        } else if (unclaimedNums.length > 0) {
+          // Unaffordable whale bet landed on: protect house treasury by deflecting to an unclaimed pocket
+          winningNumber = normalizeWheelNumber(unclaimedNums[crypto.randomInt(0, unclaimedNums.length)]);
           winningEntry = null;
         } else {
-          const isSafe = (Number(rawEntry.bet_amount) * 1.5) <= maxSafePayout;
-          if (isSafe) {
-            winningNumber = rawNumber;
-            winningEntry = rawEntry;
-          } else if (safeEntries.length > 0 && crypto.randomInt(0, 100) < 55) {
-            // Redirect from an unaffordable whale bet to an affordable player bet so someone still wins!
-            winningEntry = pickWeightedEntry(safeEntries);
-            winningNumber = winningEntry.number;
-          } else if (unclaimedNums.length > 0) {
-            // Protect house treasury by landing on an unclaimed segment until pool builds up
-            winningNumber = unclaimedNums[crypto.randomInt(0, unclaimedNums.length)];
-            winningEntry = null;
-          } else {
-            // Every number on the wheel was claimed: pick the lowest-bet entry
-            const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
-            winningEntry = sortedByBet[0];
-            winningNumber = winningEntry.number;
-          }
+          // Extremely rare edge case: every number on wheel was claimed
+          const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
+          winningEntry = sortedByBet[0];
+          winningNumber = normalizeWheelNumber(winningEntry.number);
         }
       }
     }
@@ -770,7 +773,7 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Registration is closed for this round.' };
     }
 
-    const cleanNum = String(number ?? '').trim();
+    const cleanNum = normalizeWheelNumber(number);
     const validWheelNums = this.getWheelNumbers(session);
     if (!cleanNum || !validWheelNums.includes(cleanNum)) {
       return {
@@ -918,7 +921,7 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Registration is closed for this round.' };
     }
 
-    const cleanNum = String(number ?? '').trim();
+    const cleanNum = normalizeWheelNumber(number);
     const validWheelNums = this.getWheelNumbers(session);
     if (!cleanNum || !validWheelNums.includes(cleanNum)) {
       return {
@@ -1026,7 +1029,7 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Cannot remove picks after registration is closed.' };
     }
 
-    const cleanNum = String(number ?? '').trim();
+    const cleanNum = normalizeWheelNumber(number);
     const existingEntry = db.prepare(`
       SELECT * FROM entries WHERE round_id = ? AND number = ? AND status = 'ACTIVE'
     `).get(currentRound.id, cleanNum);
@@ -1149,7 +1152,7 @@ export class GameEngine {
         entries,
         winnerMode
       });
-      winningNumber = outcome.winningNumber;
+      winningNumber = normalizeWheelNumber(outcome.winningNumber);
       winningEntry = outcome.winningEntry;
       appliedMultiplier = outcome.appliedMultiplier;
 
@@ -1163,13 +1166,13 @@ export class GameEngine {
       // Party / guaranteed promo mode: selects among claimed numbers
       const winningIndex = crypto.randomInt(0, entries.length);
       winningEntry = entries[winningIndex];
-      winningNumber = winningEntry.number;
+      winningNumber = normalizeWheelNumber(winningEntry.number);
     } else {
       // Default: TRUE_ODDS (Hard arcade challenge: selection across ALL numbers in wheel range!)
       // If the wheel lands on an unclaimed number, there is NO WINNER this round!
       const allWheelNums = this.getWheelNumbers(session);
-      winningNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
-      winningEntry = entries.find(e => String(e.number) === String(winningNumber)) || null;
+      winningNumber = normalizeWheelNumber(allWheelNums[crypto.randomInt(0, allWheelNums.length)]);
+      winningEntry = entries.find(e => normalizeWheelNumber(e.number) === normalizeWheelNumber(winningNumber)) || null;
     }
 
     const spinDurationMs = 5000; // 5.0s fast high-energy arcade spin

@@ -267,6 +267,38 @@ async function runTests() {
 
   const postSpinStats = engine.getHouseCashStats(session.sessionId);
   assert(postSpinStats.netProfit >= 10, 'House must remain in positive net profit after spin');
+
+  // Test True Odds Cash Multiplier: Authentic arcade odds across all wheel pockets (unclaimed pocket = NO WINNER)
+  const trueOddsCashRound = engine.createNextRound(session.sessionId, { prizeId: 'prize_cash_3x' });
+  assert.strictEqual(trueOddsCashRound.success, true);
+  engine.setWinnerMode(session.sessionId, 'TRUE_ODDS');
+  engine.claimNumber(session.sessionId, {
+    number: 11,
+    playerToken: 'token_single_bettor',
+    nickname: 'SoloPlayer',
+    betAmount: 50
+  });
+  engine.closeRegistration(session.sessionId);
+
+  let winCount = 0;
+  let noWinCount = 0;
+  for (let i = 0; i < 50; i++) {
+    const outcome = engine.selectSmartCashOutcome({
+      session: { id: session.sessionId, winner_mode: 'TRUE_ODDS', wheel_numbers_json: null },
+      currentRound: { id: trueOddsCashRound.roundId },
+      entries: [{ number: '11', bet_amount: 50 }],
+      winnerMode: 'TRUE_ODDS'
+    });
+    if (outcome.winningEntry) {
+      assert.strictEqual(String(outcome.winningNumber), '11');
+      winCount++;
+    } else {
+      assert.notStrictEqual(String(outcome.winningNumber), '11');
+      noWinCount++;
+    }
+  }
+  assert(noWinCount >= 35, `True odds must produce mostly unclaimed spins (got ${noWinCount} no-winners and ${winCount} wins out of 50)`);
+  console.log(`  ✅ True Odds Cash Multiplier verified (${noWinCount}/50 unclaimed, ${winCount}/50 wins)`);
   console.log('  ✅ Smart Profit-Protected Cash Multiplier (1.5x / 2x / 3x) passed');
 
   // 12. MongoDB `chillaxgaminghub` Integration Verification

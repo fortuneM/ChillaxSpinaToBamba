@@ -23,6 +23,18 @@ export const DEFAULT_DB_NAME = 'chillaxgaminghub';
 export const DEFAULT_MONGODB_URI =
   'mongodb+srv://spinauser:RZu0Os1eK4KZyNBE@cluster0.q1kwbvb.mongodb.net/chillaxgaminghub?retryWrites=true&w=majority&appName=Cluster0';
 
+// Normalize wheel pocket identifiers (handles '10.0' from DB/Mongo -> '10', preserves '0' and '00')
+export function normalizeWheelNumber(val) {
+  if (val === null || val === undefined) return '';
+  const s = String(val).trim();
+  if (s === '00' || s === '0') return s;
+  const num = Number(s);
+  if (!Number.isNaN(num) && Number.isInteger(num)) {
+    return String(num);
+  }
+  return s;
+}
+
 // Generic flexible schema for chillaxgaminghub collections keyed by `id`
 function createCollectionSchema(collectionName) {
   return new mongoose.Schema(
@@ -298,7 +310,7 @@ export async function syncWithChillaxGamingHub(sqliteDb) {
           r.status || 'IDLE',
           r.prize_id || null,
           r.prize_snapshot_json || null,
-          r.winning_number !== undefined ? r.winning_number : null,
+          r.winning_number !== undefined && r.winning_number !== null ? normalizeWheelNumber(r.winning_number) : null,
           r.winning_entry_id || null,
           Number(r.applied_multiplier) || 0,
           r.started_at || null,
@@ -327,7 +339,7 @@ export async function syncWithChillaxGamingHub(sqliteDb) {
           e.id,
           e.session_id,
           e.round_id,
-          Number(e.number),
+          normalizeWheelNumber(e.number),
           e.player_token,
           e.nickname || 'Player',
           Number(e.bet_amount) || 0,
