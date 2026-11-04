@@ -402,13 +402,14 @@ async function runTests() {
 
   // 15. Weighted Cash-Prize Schedule (4.625% / R0.575 EV), R1,000 Ring-Fenced Reserve, Odds-Lock & Profitability Model
   console.log('Test 15: Weighted Cash-Prize Schedule, R1,000 Ring-Fenced Reserve & Profitability Model');
+  const uniqueTestShopCode = `CHX-${Math.floor(10000 + Math.random() * 89999)}`;
   const finSession = await engine.createSession({
     numberMin: 1,
     numberMax: 20,
     hostPin: '1234',
     defaultPrizeId: 'prize_weighted_cash',
-    shopCode: 'CHX-9901',
-    shopId: 'shop_9901',
+    shopCode: uniqueTestShopCode,
+    shopId: `shop_${uniqueTestShopCode}`,
     shopName: 'Chillax Flagship'
   });
 
@@ -498,7 +499,20 @@ async function runTests() {
 
   console.log('  ✅ Weighted Cash-Prize Schedule, R1,000 Ring-Fenced Reserve & Profitability Model passed');
 
-  console.log('\n🎉 ALL 15 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 16. Entry Logging & Chillax Gaming App Sales Report Sync
+  console.log('Test 16: Entry Logging & Chillax Gaming App Sales Report Sync');
+  const histCheck = engine.getSessionHistory(finSession.sessionId);
+  assert(Array.isArray(histCheck.entries) && histCheck.entries.length >= 1, 'Session history must include all logged entries');
+  assert.strictEqual(histCheck.entries[0].nickname, 'Sipho');
+  assert.strictEqual(Number(histCheck.entries[0].bet_amount), 10);
+
+  const syncReportRes = await engine.syncEntriesToChillaxHub(finSession.sessionId);
+  assert.strictEqual(syncReportRes.synced, true, 'Sales report sync must succeed');
+  assert(syncReportRes.entriesSynced >= 1, 'Must sync logged entries to chillaxgaminghub.transactions');
+  assert.strictEqual(syncReportRes.totalSalesAmount, 10, 'Total synced sales amount for session must equal R10');
+  console.log('  ✅ Entry Logging & Chillax Gaming App Sales Report Sync passed');
+
+  console.log('\n🎉 ALL 16 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

@@ -4,6 +4,9 @@ import {
   syncRecordToMongo,
   deleteRecordFromMongo,
   recordHubTransaction,
+  recordHubEntryTransaction,
+  syncAllSessionEntriesToHub,
+  HubTransaction,
   updateHubTvStatus,
   isValidHubPin,
   getMongoStatus,
@@ -1345,6 +1348,16 @@ export class GameEngine {
               UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ?, tx_id = ? WHERE id = ?
             `).run(cleanBetAmount, cleanPayoutAmount, cleanNickname, txId, existingPlayerEntry.id);
             this.syncEntryToMongo(existingPlayerEntry.id);
+            const updatedEntryRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(existingPlayerEntry.id);
+            if (updatedEntryRow) {
+              recordHubEntryTransaction({
+                entry: updatedEntryRow,
+                session,
+                round: currentRound,
+                prize,
+                cashierName: 'Mobile QR'
+              });
+            }
             this.broadcastSessionState(sessionId);
             return {
               success: true,
@@ -1386,7 +1399,20 @@ export class GameEngine {
           throw txErr;
         }
         deleteRecordFromMongo('entries', existingPlayerEntry.id);
-        if (newEntryId) this.syncEntryToMongo(newEntryId);
+        HubTransaction.deleteOne({ id: `tx_spin_entry_${existingPlayerEntry.id}` }).catch(() => {});
+        if (newEntryId) {
+          this.syncEntryToMongo(newEntryId);
+          const newEntryRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(newEntryId);
+          if (newEntryRow) {
+            recordHubEntryTransaction({
+              entry: newEntryRow,
+              session,
+              round: currentRound,
+              prize,
+              cashierName: 'Mobile QR'
+            });
+          }
+        }
       } else {
         // Fresh claim
         const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
@@ -1395,6 +1421,16 @@ export class GameEngine {
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
         `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
         this.syncEntryToMongo(entryId);
+        const createdEntryRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
+        if (createdEntryRow) {
+          recordHubEntryTransaction({
+            entry: createdEntryRow,
+            session,
+            round: currentRound,
+            prize,
+            cashierName: 'Mobile QR'
+          });
+        }
 
         if (cleanBetAmount > 0) {
           logReserveLedger({
@@ -1539,6 +1575,16 @@ export class GameEngine {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
       `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
       this.syncEntryToMongo(entryId);
+      const createdHostEntry = db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
+      if (createdHostEntry) {
+        recordHubEntryTransaction({
+          entry: createdHostEntry,
+          session,
+          round: currentRound,
+          prize,
+          cashierName: 'Spin & Win Host'
+        });
+      }
 
       if (cleanBetAmount > 0) {
         logReserveLedger({
@@ -1621,6 +1667,14 @@ export class GameEngine {
     const refundedAmount = Number(existingEntry.bet_amount) || 0;
     db.prepare('DELETE FROM entries WHERE id = ?').run(existingEntry.id);
     deleteRecordFromMongo('entries', existingEntry.id);
+    recordHubEntryTransaction({
+      entry: existingEntry,
+      session,
+      round: currentRound,
+      status: 'cancelled',
+      cashierName: 'Spin & Win Host',
+      notes: `Authorised refund of R${refundedAmount} for ${existingEntry.nickname} (#${cleanNum})`
+    });
 
     if (refundedAmount > 0) {
       logReserveLedger({
@@ -1886,24 +1940,19 @@ export class GameEngine {
               : (activeRound.prize_snapshot_json ? JSON.parse(activeRound.prize_snapshot_json) : null))
           : null;
 
-        // Record round transaction in chillaxgaminghub.transactions
-        const roundTotalCollected = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
-        if (roundTotalCollected > 0 || winningEntry) {
-          let txShopId = null;
-          try {
-            const sJson = session?.settings_json ? JSON.parse(session.settings_json) : {};
-            txShopId = sJson.shopId || null;
-          } catch {}
-          recordHubTransaction({
-            shopId: txShopId,
-            sessionId,
-            roundId: currentRound.id,
-            roundNumber: currentRound.round_number,
-            customerName: winningEntry ? winningEntry.nickname : 'No Winner (House Retained)',
-            totalCollected: roundTotalCollected,
-            payoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
-            appliedMultiplier,
-            prizeName: prizeTierLabel || roundPrize?.name || 'Spin & Win'
+        // Sync every entry's final outcome (winner payout, redemption code) to chillaxgaminghub.transactions
+        for (const ent of entries) {
+          const isWin = Boolean(winningEntry && winningEntry.id === ent.id);
+          const entPayout = isWin ? (Number(winningEntry.payout_amount) || 0) : 0;
+          recordHubEntryTransaction({
+            entry: isWin ? { ...ent, payout_amount: entPayout } : ent,
+            session,
+            round: { ...activeRound, prize_tier_label: prizeTierLabel },
+            prize: roundPrize,
+            isWinner: isWin,
+            payoutAmount: entPayout,
+            appliedMultiplier: isWin ? appliedMultiplier : 0,
+            redemptionCode: isWin ? redemptionCode : null
           });
         }
 
@@ -2086,24 +2135,36 @@ export class GameEngine {
     const round = db.prepare('SELECT * FROM rounds WHERE id = ? AND session_id = ?').get(roundId, sessionId);
     if (!round) return { success: false, error: 'Round not found.' };
 
-    const activePaidEntries = db.prepare(`
-      SELECT * FROM entries WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount > 0
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    const activeEntries = db.prepare(`
+      SELECT * FROM entries WHERE round_id = ? AND status = 'ACTIVE'
     `).all(roundId);
+    const activePaidEntries = activeEntries.filter((e) => Number(e.bet_amount) > 0);
 
     let totalRefunded = 0;
-    for (const entry of activePaidEntries) {
+    for (const entry of activeEntries) {
       const amt = Number(entry.bet_amount) || 0;
-      totalRefunded += amt;
-      logReserveLedger({
-        sessionId,
-        roundId,
-        entryId: entry.id,
-        txId: entry.tx_id || null,
-        entryType: 'ROUND_CANCEL_REFUND',
-        amount: -amt,
-        committedDelta: 0,
-        notes: `Round #${round.round_number} cancelled (${reason}): refunded R${amt} to ${entry.nickname}`,
-        actorId: 'host'
+      if (amt > 0) {
+        totalRefunded += amt;
+        logReserveLedger({
+          sessionId,
+          roundId,
+          entryId: entry.id,
+          txId: entry.tx_id || null,
+          entryType: 'ROUND_CANCEL_REFUND',
+          amount: -amt,
+          committedDelta: 0,
+          notes: `Round #${round.round_number} cancelled (${reason}): refunded R${amt} to ${entry.nickname}`,
+          actorId: 'host'
+        });
+      }
+      recordHubEntryTransaction({
+        entry,
+        session,
+        round,
+        status: 'cancelled',
+        cashierName: 'Spin & Win Host',
+        notes: `Round #${round.round_number} cancelled (${reason}) — Refunded R${amt}`
       });
     }
 
@@ -2148,6 +2209,25 @@ export class GameEngine {
 
     const redemptionRow = db.prepare('SELECT * FROM redemptions WHERE id = ?').get(redemptionId);
     if (redemptionRow) syncRecordToMongo('redemptions', redemptionRow);
+
+    if (winningEntry) {
+      const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(round.session_id);
+      const prizeObj = round.prize_id
+        ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(round.prize_id)
+        : null;
+      recordHubEntryTransaction({
+        entry: winningEntry,
+        session,
+        round,
+        prize: prizeObj,
+        isWinner: true,
+        payoutAmount: Number(winningEntry.payout_amount) || 0,
+        appliedMultiplier: Number(round.applied_multiplier) || 0,
+        redemptionCode: round.redemption_code || null,
+        redeemedAt: now,
+        redeemedBy
+      });
+    }
 
     if (winningEntry && Number(winningEntry.payout_amount) > 0) {
       logReserveLedger({
@@ -2355,6 +2435,34 @@ export class GameEngine {
       SELECT * FROM cash_reserve_ledger WHERE session_id = ? ORDER BY created_at DESC LIMIT 50
     `).all(sessionId);
 
-    return { rounds, audits, reserveLedger };
+    const entries = db.prepare(`
+      SELECT e.*,
+             r.round_number, r.status as round_status, r.winning_entry_id, r.redemption_code, r.prize_tier_label,
+             p.name as prize_name, p.prize_type as prize_type,
+             red.redeemed_at, red.redeemed_by
+      FROM entries e
+      JOIN rounds r ON e.round_id = r.id
+      LEFT JOIN prizes p ON r.prize_id = p.id
+      LEFT JOIN redemptions red ON r.id = red.round_id
+      WHERE e.session_id = ?
+      ORDER BY e.claimed_at DESC
+      LIMIT 200
+    `).all(sessionId);
+
+    return { rounds, entries, audits, reserveLedger };
+  }
+
+  // Push & sync all logged entries to Chillax Gaming App (`chillaxgaminghub.transactions`) for sales reports
+  async syncEntriesToChillaxHub(sessionId = null) {
+    const result = await syncAllSessionEntriesToHub(db, sessionId);
+    if (sessionId) {
+      logAudit(sessionId, 'HOST', 'host', 'SALES_REPORT_SYNCED', {
+        entriesSynced: result.entriesSynced,
+        totalSalesAmount: result.totalSalesAmount,
+        totalPayoutAmount: result.totalPayoutAmount,
+        netSpinProfit: result.netSpinProfit
+      });
+    }
+    return result;
   }
 }

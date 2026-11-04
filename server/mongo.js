@@ -392,6 +392,9 @@ export async function syncWithChillaxGamingHub(sqliteDb) {
       hubCache.collectionCounts[`spin_${table}`] = rows.length;
     }
 
+    // 4. Push all Spin & Win entries into `chillaxgaminghub.transactions` for Chillax Gaming App Sales Reports
+    await syncAllSessionEntriesToHub(sqliteDb);
+
     hubCache.collectionCounts.shops = hubCache.shops.length;
     hubCache.collectionCounts.tvs = hubCache.tvs.length;
     hubCache.collectionCounts.users = hubCache.users.length;
@@ -457,6 +460,308 @@ export async function deleteRecordFromMongo(table, id) {
   } catch (err) {
     console.error(`[MongoDB] Delete error on spin_${table}:`, err.message);
   }
+}
+
+/**
+ * Resolves the shopId, shopCode, and shopName for a Spin & Win session.
+ */
+export function resolveShopForSession(session) {
+  let settings = {};
+  if (session?.settings_json) {
+    try {
+      settings = JSON.parse(session.settings_json);
+    } catch {}
+  }
+  const rawCode = String(settings.shopCode || session?.short_code || '').trim().toUpperCase();
+  const matchedShop = (hubCache.shops || []).find(
+    (s) =>
+      (settings.shopId && s.id === settings.shopId) ||
+      (rawCode && String(s.shopCode || '').trim().toUpperCase() === rawCode)
+  );
+  const defaultShop = hubCache.shops[0];
+  return {
+    shopId: settings.shopId || matchedShop?.id || defaultShop?.id || 'shop_default_1',
+    shopCode: rawCode || matchedShop?.shopCode || defaultShop?.shopCode || 'CHX-101',
+    shopName: settings.shopName || matchedShop?.name || defaultShop?.name || 'Chillax Gaming Center'
+  };
+}
+
+/**
+ * Non-blocking webhook to notify a local/remote Chillax Gaming Center server
+ * so its in-memory transaction cache refreshes immediately for live Sales Reports.
+ */
+export async function notifyChillaxHubServer(payload = {}) {
+  const hubBaseUrl = (process.env.CHILLAX_HUB_API_URL || 'http://localhost:4000').replace(/\/$/, '');
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    await fetch(`${hubBaseUrl}/api/reports/sync-spin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+  } catch {
+    // Chillax Gaming Center server might not be running locally on :4000; MongoDB is still authoritative
+  }
+}
+
+/**
+ * Logs an individual Spin & Win entry (player or host pick) directly into
+ * `chillaxgaminghub.transactions` and notifies the Chillax Gaming App for live sales reports.
+ */
+export async function recordHubEntryTransaction({
+  entry,
+  session,
+  round,
+  prize = null,
+  isWinner = false,
+  payoutAmount = 0,
+  appliedMultiplier = 0,
+  redemptionCode = null,
+  redeemedAt = null,
+  redeemedBy = null,
+  status = 'completed',
+  cashierName = 'Spin & Win Host',
+  notes = ''
+}) {
+  if (!entry || !entry.id) return null;
+  const { shopId, shopCode, shopName } = resolveShopForSession(session);
+  const txId = `tx_spin_entry_${entry.id}`;
+  const createdAt = entry.claimed_at || new Date().toISOString();
+  const updatedAt = new Date().toISOString();
+  const betAmount = Math.round((Number(entry.bet_amount) || 0) * 100) / 100;
+  const cleanPayout = isWinner ? Math.round((Number(payoutAmount) || 0) * 100) / 100 : 0;
+  const netProfit = Math.round((betAmount - cleanPayout) * 100) / 100;
+  const roundNum = round?.round_number || 1;
+  const prizeTitle = prize?.name || round?.prize_tier_label || 'Spin & Win';
+  const entrySource = String(entry.player_token || '').startsWith('host_pick_') ? 'Host Counter Pick' : 'Mobile QR Pick';
+
+  let itemLabel = `Spin & Win #${entry.number} (Rnd #${roundNum} • ${prizeTitle})`;
+  if (isWinner && cleanPayout > 0) {
+    itemLabel += ` — 🏆 WON R${cleanPayout}`;
+  } else if (isWinner) {
+    itemLabel += ` — 🏆 WINNER`;
+  }
+
+  const defaultNote =
+    status === 'cancelled'
+      ? `Refunded / Voided Spin Entry #${entry.number} (${entry.tx_id || entry.id})`
+      : isWinner
+      ? `🏆 Winner #${entry.number} (${entry.nickname}) • Won ${cleanPayout > 0 ? `R${cleanPayout}` : prizeTitle}${redemptionCode ? ` [Code: ${redemptionCode}]` : ''}${redeemedAt ? ` • Redeemed by ${redeemedBy || 'Host'}` : ''}`
+      : `Entry #${entry.number} (${entrySource}) • Tx: ${entry.tx_id || entry.id}`;
+
+  const txDoc = {
+    id: txId,
+    shopId,
+    shopCode,
+    shopName,
+    type: 'SPIN_AND_WIN',
+    sessionId: session?.id || entry.session_id,
+    roundId: round?.id || entry.round_id,
+    roundNumber: roundNum,
+    entryId: entry.id,
+    txId: entry.tx_id || txId,
+    wheelNumber: String(entry.number),
+    customerName: entry.nickname || `Player #${entry.number}`,
+    items: [
+      {
+        productId: 'spin_and_win_entry',
+        name: itemLabel,
+        category: 'Spin & Win',
+        price: betAmount,
+        quantity: 1,
+        lineTotal: betAmount
+      }
+    ],
+    totalAmount: betAmount,
+    payoutAmount: cleanPayout,
+    netProfit,
+    appliedMultiplier: Number(appliedMultiplier) || 0,
+    isWinner: Boolean(isWinner),
+    redemptionCode: redemptionCode || null,
+    prizeRedeemed: Boolean(redeemedAt),
+    redeemedAt: redeemedAt || null,
+    redeemedBy: redeemedBy || null,
+    paymentType: 'Cash',
+    cashierName: cashierName || (entrySource === 'Host Counter Pick' ? 'Spin & Win Host' : 'Mobile QR'),
+    status,
+    notes: notes || defaultNote,
+    createdAt,
+    updatedAt
+  };
+
+  if (mongoose.connection.readyState === 1) {
+    try {
+      await HubTransaction.findOneAndUpdate(
+        { id: txId },
+        txDoc,
+        { upsert: true, returnDocument: 'after', lean: true }
+      );
+      // Remove legacy round-aggregate tx if present so revenue is never double-counted
+      if (round?.id) {
+        await HubTransaction.deleteOne({ id: `tx_spin_${round.id}` });
+      }
+    } catch (err) {
+      console.error('[MongoDB] Failed to record entry transaction in chillaxgaminghub.transactions:', err.message);
+    }
+  }
+
+  notifyChillaxHubServer({ transaction: txDoc, shopId, shopCode });
+  return txDoc;
+}
+
+/**
+ * Bulk-syncs all Spin & Win entries from SQLite into `chillaxgaminghub.transactions`
+ * and `chillaxgaminghub.spin_entries` so the Chillax Gaming App sales reports have 100% of entries.
+ */
+export async function syncAllSessionEntriesToHub(sqliteDb, targetSessionId = null) {
+  if (!sqliteDb) return { synced: false, error: 'Database not available' };
+
+  const query = `
+    SELECT e.*,
+           s.short_code, s.settings_json,
+           r.round_number, r.status as round_status, r.winning_entry_id, r.applied_multiplier,
+           r.redemption_code, r.prize_tier_label, r.prize_snapshot_json,
+           p.name as prize_name, p.prize_type as prize_type,
+           red.redeemed_at, red.redeemed_by
+    FROM entries e
+    JOIN sessions s ON e.session_id = s.id
+    JOIN rounds r ON e.round_id = r.id
+    LEFT JOIN prizes p ON r.prize_id = p.id
+    LEFT JOIN redemptions red ON r.id = red.round_id
+    ${targetSessionId ? 'WHERE e.session_id = ?' : ''}
+    ORDER BY e.claimed_at DESC
+  `;
+
+  const rows = targetSessionId
+    ? sqliteDb.prepare(query).all(targetSessionId)
+    : sqliteDb.prepare(query).all();
+
+  const txDocs = [];
+  const roundIdsWithEntries = new Set();
+  let totalSalesAmount = 0;
+  let totalPayoutAmount = 0;
+
+  for (const row of rows) {
+    const sessionObj = {
+      id: row.session_id,
+      short_code: row.short_code,
+      settings_json: row.settings_json
+    };
+    const { shopId, shopCode, shopName } = resolveShopForSession(sessionObj);
+    const isWinner = Boolean(row.winning_entry_id && row.winning_entry_id === row.id);
+    const isCancelled = row.status === 'CANCELLED' || row.round_status === 'CANCELLED';
+    const betAmount = Math.round((Number(row.bet_amount) || 0) * 100) / 100;
+    const payoutAmount = isWinner ? Math.round((Number(row.payout_amount) || 0) * 100) / 100 : 0;
+    const netProfit = Math.round((betAmount - payoutAmount) * 100) / 100;
+
+    if (!isCancelled) {
+      totalSalesAmount += betAmount;
+      totalPayoutAmount += payoutAmount;
+    }
+
+    let prizeTitle = row.prize_name || row.prize_tier_label || 'Spin & Win';
+    if (!row.prize_name && row.prize_snapshot_json) {
+      try {
+        const snap = JSON.parse(row.prize_snapshot_json);
+        if (snap?.name) prizeTitle = snap.name;
+      } catch {}
+    }
+
+    const roundNum = row.round_number || 1;
+    const entrySource = String(row.player_token || '').startsWith('host_pick_') ? 'Host Counter Pick' : 'Mobile QR Pick';
+    let itemLabel = `Spin & Win #${row.number} (Rnd #${roundNum} • ${prizeTitle})`;
+    if (isWinner && payoutAmount > 0) {
+      itemLabel += ` — 🏆 WON R${payoutAmount}`;
+    } else if (isWinner) {
+      itemLabel += ` — 🏆 WINNER`;
+    }
+
+    const txId = `tx_spin_entry_${row.id}`;
+    const status = isCancelled ? 'cancelled' : 'completed';
+    const notes = isCancelled
+      ? `Refunded / Voided Spin Entry #${row.number} (${row.tx_id || row.id})`
+      : isWinner
+      ? `🏆 Winner #${row.number} (${row.nickname}) • Won ${payoutAmount > 0 ? `R${payoutAmount}` : prizeTitle}${row.redemption_code ? ` [Code: ${row.redemption_code}]` : ''}${row.redeemed_at ? ` • Redeemed by ${row.redeemed_by || 'Host'}` : ''}`
+      : `Entry #${row.number} (${entrySource}) • Tx: ${row.tx_id || row.id}`;
+
+    roundIdsWithEntries.add(`tx_spin_${row.round_id}`);
+
+    txDocs.push({
+      id: txId,
+      shopId,
+      shopCode,
+      shopName,
+      type: 'SPIN_AND_WIN',
+      sessionId: row.session_id,
+      roundId: row.round_id,
+      roundNumber: roundNum,
+      entryId: row.id,
+      txId: row.tx_id || txId,
+      wheelNumber: String(row.number),
+      customerName: row.nickname || `Player #${row.number}`,
+      items: [
+        {
+          productId: 'spin_and_win_entry',
+          name: itemLabel,
+          category: 'Spin & Win',
+          price: betAmount,
+          quantity: 1,
+          lineTotal: betAmount
+        }
+      ],
+      totalAmount: betAmount,
+      payoutAmount,
+      netProfit,
+      appliedMultiplier: isWinner ? (Number(row.applied_multiplier) || 0) : 0,
+      isWinner,
+      redemptionCode: isWinner ? (row.redemption_code || null) : null,
+      prizeRedeemed: isWinner ? Boolean(row.redeemed_at) : false,
+      redeemedAt: isWinner ? (row.redeemed_at || null) : null,
+      redeemedBy: isWinner ? (row.redeemed_by || null) : null,
+      paymentType: 'Cash',
+      cashierName: entrySource === 'Host Counter Pick' ? 'Spin & Win Host' : 'Mobile QR',
+      status,
+      notes,
+      createdAt: row.claimed_at || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  if (mongoose.connection.readyState === 1 && txDocs.length > 0) {
+    try {
+      const ops = txDocs.map((doc) => ({
+        updateOne: {
+          filter: { id: doc.id },
+          update: { $set: doc },
+          upsert: true
+        }
+      }));
+      await HubTransaction.bulkWrite(ops, { ordered: false });
+
+      if (roundIdsWithEntries.size > 0) {
+        await HubTransaction.deleteMany({ id: { $in: Array.from(roundIdsWithEntries) } });
+      }
+    } catch (err) {
+      console.error('[MongoDB] Bulk entry transaction sync error:', err.message);
+    }
+  }
+
+  await notifyChillaxHubServer({
+    syncedEntriesCount: txDocs.length,
+    transactions: txDocs
+  });
+
+  return {
+    synced: true,
+    entriesSynced: txDocs.length,
+    totalSalesAmount: Math.round(totalSalesAmount * 100) / 100,
+    totalPayoutAmount: Math.round(totalPayoutAmount * 100) / 100,
+    netSpinProfit: Math.round((totalSalesAmount - totalPayoutAmount) * 100) / 100,
+    syncedAt: new Date().toISOString()
+  };
 }
 
 /**

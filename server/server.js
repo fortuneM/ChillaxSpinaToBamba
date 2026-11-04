@@ -478,6 +478,21 @@ app.get('/api/sessions/:id/reserve-ledger', requireHostAuth, (req, res) => {
   res.json(result);
 });
 
+// POST /api/sessions/:id/sync-sales-report: Push all logged Spin & Win entries to Chillax Gaming App sales reports
+app.post('/api/sessions/:id/sync-sales-report', requireHostAuth, async (req, res) => {
+  try {
+    const result = await engine.syncEntriesToChillaxHub(req.params.id);
+    const history = engine.getSessionHistory(req.params.id);
+    res.json({
+      success: true,
+      ...result,
+      entries: history.entries || []
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // -------------------------------------------------------------
 // Real-time WebSockets with Socket.IO
 // -------------------------------------------------------------

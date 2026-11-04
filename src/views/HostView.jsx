@@ -70,6 +70,9 @@ export function HostView() {
   );
   const [ownerModelTab, setOwnerModelTab] = useState('profitability'); // 'profitability' | 'schedule' | 'calendar'
   const [replenishAmount, setReplenishAmount] = useState(500);
+  const [historyTab, setHistoryTab] = useState('entries'); // 'entries' | 'rounds'
+  const [isSyncingSales, setIsSyncingSales] = useState(false);
+  const [salesSyncMsg, setSalesSyncMsg] = useState('');
   const walkInInputRef = useRef(null);
 
   const toggleProfitEngine = () => {
@@ -582,12 +585,30 @@ export function HostView() {
     });
   };
 
-  // Fetch history
+  // Fetch history & logged entries
   const handleLoadHistory = async () => {
     const data = await apiRequest(`/api/sessions/${session.sessionId}/history`, 'GET');
     if (data) {
       setHistoryData(data);
       setShowHistory(true);
+    }
+  };
+
+  // Push all logged entries to Chillax Gaming App sales reports
+  const handleSyncSalesReport = async () => {
+    if (!session?.sessionId || isSyncingSales) return;
+    setIsSyncingSales(true);
+    setSalesSyncMsg('');
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/sync-sales-report`, 'POST');
+    setIsSyncingSales(false);
+    if (data?.success) {
+      if (data.entries) {
+        setHistoryData((prev) => ({ ...(prev || {}), entries: data.entries }));
+      }
+      const msg = `✅ Pushed ${data.entriesSynced || 0} entries (R${data.totalSalesAmount || 0} sales) to Chillax Gaming App Sales Reports!`;
+      setSalesSyncMsg(msg);
+      setHostPickFeedback(msg);
+      fetchMongoStatus();
     }
   };
 
@@ -1147,6 +1168,16 @@ export function HostView() {
                   Monthly Prize Budget Left: <strong className="text-cyan">{fmtR(stats.availableCashReserve)}</strong> of {fmtR(stats.monthlyCashReserve)} (Max single win: R100)
                 </span>
                 <div className="reserve-controls-actions">
+                  <button
+                    type="button"
+                    disabled={isSyncingSales}
+                    onClick={handleSyncSalesReport}
+                    className="profit-toggle-btn text-cyan"
+                    title="Push all Spin & Win entries to the Chillax Gaming App Sales Reports"
+                  >
+                    <RefreshCw size={12} className="inline-icon" />{' '}
+                    {isSyncingSales ? 'Syncing Sales...' : 'Push to Sales Report'}
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleReplenishReserve(500)}
@@ -1836,56 +1867,150 @@ export function HostView() {
         </p>
       </div>
 
-      {/* History Modal */}
+      {/* History & Entries Log Modal */}
       {showHistory && (
         <div className="host-modal-overlay">
-          <div className="host-modal-card">
+          <div className="host-modal-card" style={{ maxWidth: '680px', width: '95%' }}>
             <div className="modal-header">
-              <h3>Session Rounds History &amp; Redemption Codes</h3>
+              <h3>📋 Entries Log &amp; Chillax Sales Sync</h3>
               <button onClick={() => setShowHistory(false)} className="modal-close-btn">✕</button>
             </div>
             <div className="modal-body">
-              {historyData?.rounds?.length === 0 ? (
+              <div className="flex justify-between items-center flex-wrap gap-2 mb-3">
+                <div className="owner-model-tabs">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTab('entries')}
+                    className={`range-pill ${historyTab === 'entries' ? 'active' : ''}`}
+                  >
+                    📋 All Entries ({historyData?.entries?.length || 0})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryTab('rounds')}
+                    className={`range-pill ${historyTab === 'rounds' ? 'active' : ''}`}
+                  >
+                    🎡 Rounds History ({historyData?.rounds?.length || 0})
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isSyncingSales}
+                  onClick={handleSyncSalesReport}
+                  className="profit-toggle-btn text-cyan"
+                >
+                  <RefreshCw size={13} className="inline-icon" />{' '}
+                  {isSyncingSales ? 'Pushing to Chillax App...' : 'Push All Entries to Chillax Sales Report'}
+                </button>
+              </div>
+
+              {salesSyncMsg && (
+                <div className="simple-note-box mb-3">
+                  {salesSyncMsg}
+                </div>
+              )}
+
+              {historyTab === 'entries' ? (
+                !historyData?.entries || historyData.entries.length === 0 ? (
+                  <p className="text-muted">No entries logged yet. Every player or host number pick is automatically logged here and synced to the Chillax Gaming App sales report.</p>
+                ) : (
+                  <div className="owner-table-wrap">
+                    <table className="history-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Rnd</th>
+                          <th>Pick #</th>
+                          <th>Player</th>
+                          <th>Paid</th>
+                          <th>Result / Prize</th>
+                          <th>Tx ID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historyData.entries.map((ent) => {
+                          const isWin = Boolean(ent.winning_entry_id && ent.winning_entry_id === ent.id);
+                          const isHostPick = String(ent.player_token || '').startsWith('host_pick_');
+                          const timeStr = ent.claimed_at
+                            ? new Date(ent.claimed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            : '—';
+                          return (
+                            <tr key={ent.id}>
+                              <td className="text-xs text-muted">{timeStr}</td>
+                              <td>#{ent.round_number}</td>
+                              <td className="text-cyan font-bold">#{ent.number}</td>
+                              <td>
+                                <strong>{ent.nickname}</strong>{' '}
+                                <span className="text-xs text-muted">({isHostPick ? 'Host' : 'QR'})</span>
+                              </td>
+                              <td className="font-bold text-green">
+                                {Number(ent.bet_amount) > 0 ? `R${ent.bet_amount}` : 'Free'}
+                              </td>
+                              <td>
+                                {isWin ? (
+                                  <span className="badge-redeemed">
+                                    🏆 Won {Number(ent.payout_amount) > 0 ? `R${ent.payout_amount}` : (ent.prize_name || 'Prize')}
+                                  </span>
+                                ) : ent.round_status === 'REGISTRATION_OPEN' || ent.round_status === 'REGISTRATION_CLOSED' ? (
+                                  <span className="badge-pending">In Play</span>
+                                ) : (
+                                  <span className="text-muted">No Win</span>
+                                )}
+                              </td>
+                              <td>
+                                <code className="text-xs text-cyan">{ent.tx_id || ent.id}</code>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              ) : historyData?.rounds?.length === 0 ? (
                 <p className="text-muted">No completed rounds yet.</p>
               ) : (
-                <table className="history-table">
-                  <thead>
-                    <tr>
-                      <th>Rnd</th>
-                      <th>Win #</th>
-                      <th>Winner</th>
-                      <th>Prize / Payout</th>
-                      <th>Code</th>
-                      <th>Redeemed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {historyData?.rounds?.map((r) => (
-                      <tr key={r.id}>
-                        <td>#{r.round_number}</td>
-                        <td className="text-cyan font-bold">{r.winning_number ? `#${r.winning_number}` : '—'}</td>
-                        <td>{r.winner_nickname || '—'}</td>
-                        <td>
-                          {(r.prize_type === 'cash_multiplier' || r.prize_type === 'weighted_cash') && r.winner_payout_amount > 0
-                            ? `R${r.winner_payout_amount} Cash (${r.prize_tier_label || `${r.applied_multiplier || 1.5}x R${r.winner_bet_amount}`})`
-                            : (r.prize_name || 'Standard')}
-                        </td>
-                        <td>
-                          {r.redemption_code ? <code className="text-cyan">{r.redemption_code}</code> : '—'}
-                        </td>
-                        <td>
-                          {r.redeemed_at ? (
-                            <span className="badge-redeemed">✓ Redeemed</span>
-                          ) : r.winning_entry_id ? (
-                            <span className="badge-pending">Unredeemed Liability</span>
-                          ) : (
-                            <span className="text-muted">No Winner</span>
-                          )}
-                        </td>
+                <div className="owner-table-wrap">
+                  <table className="history-table">
+                    <thead>
+                      <tr>
+                        <th>Rnd</th>
+                        <th>Win #</th>
+                        <th>Winner</th>
+                        <th>Prize / Payout</th>
+                        <th>Code</th>
+                        <th>Redeemed</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {historyData?.rounds?.map((r) => (
+                        <tr key={r.id}>
+                          <td>#{r.round_number}</td>
+                          <td className="text-cyan font-bold">{r.winning_number ? `#${r.winning_number}` : '—'}</td>
+                          <td>{r.winner_nickname || '—'}</td>
+                          <td>
+                            {(r.prize_type === 'cash_multiplier' || r.prize_type === 'weighted_cash') && r.winner_payout_amount > 0
+                              ? `R${r.winner_payout_amount} Cash (${r.prize_tier_label || `${r.applied_multiplier || 1.5}x R${r.winner_bet_amount}`})`
+                              : (r.prize_name || 'Standard')}
+                          </td>
+                          <td>
+                            {r.redemption_code ? <code className="text-cyan">{r.redemption_code}</code> : '—'}
+                          </td>
+                          <td>
+                            {r.redeemed_at ? (
+                              <span className="badge-redeemed">✓ Redeemed</span>
+                            ) : r.winning_entry_id ? (
+                              <span className="badge-pending">Unredeemed Liability</span>
+                            ) : (
+                              <span className="text-muted">No Winner</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </div>
