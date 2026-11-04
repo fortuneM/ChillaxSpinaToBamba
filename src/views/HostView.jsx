@@ -51,7 +51,7 @@ export function HostView() {
   const [showHistory, setShowHistory] = useState(false);
   const [redeemNotes, setRedeemNotes] = useState('');
   const [walkInName, setWalkInName] = useState('');
-  const [walkInBet, setWalkInBet] = useState(5);
+  const [walkInBet, setWalkInBet] = useState(10);
   const [selectedPickNum, setSelectedPickNum] = useState(null);
   const [hostPickFeedback, setHostPickFeedback] = useState('');
   const [isAssigningPick, setIsAssigningPick] = useState(false);
@@ -65,12 +65,25 @@ export function HostView() {
   const [showProfitEngine, setShowProfitEngine] = useState(
     () => localStorage.getItem('chillax_show_profit_engine') === 'true'
   );
+  const [showOwnerModel, setShowOwnerModel] = useState(
+    () => localStorage.getItem('chillax_show_owner_model') === 'true'
+  );
+  const [ownerModelTab, setOwnerModelTab] = useState('profitability'); // 'profitability' | 'schedule' | 'calendar'
+  const [replenishAmount, setReplenishAmount] = useState(500);
   const walkInInputRef = useRef(null);
 
   const toggleProfitEngine = () => {
     setShowProfitEngine((prev) => {
       const next = !prev;
       localStorage.setItem('chillax_show_profit_engine', String(next));
+      return next;
+    });
+  };
+
+  const toggleOwnerModel = () => {
+    setShowOwnerModel((prev) => {
+      const next = !prev;
+      localStorage.setItem('chillax_show_owner_model', String(next));
       return next;
     });
   };
@@ -446,13 +459,18 @@ export function HostView() {
   // Host manually claims a number for a player without a phone
   const handleHostClaimNumber = async (num, customName = walkInName) => {
     if (!session?.sessionId || isAssigningPick) return;
+    const isWeightedCash = Boolean(
+      session?.currentRound?.isWeightedCash ||
+      session?.currentRound?.prize?.prize_type === 'weighted_cash'
+    );
     const isCashRound = Boolean(
       session?.currentRound?.isCashRound ||
-      session?.currentRound?.prize?.prize_type === 'cash_multiplier'
+      session?.currentRound?.prize?.prize_type === 'cash_multiplier' ||
+      isWeightedCash
     );
     const numericBet = Number(walkInBet);
     if (isCashRound && (!Number.isFinite(numericBet) || numericBet < 5)) {
-      setActionError('Minimum bet amount is R5 for 3x Cash Prize rounds.');
+      setActionError('Minimum bet amount is R5 (recommended R10) for Cash Spin rounds.');
       return;
     }
 
@@ -461,28 +479,63 @@ export function HostView() {
     const data = await apiRequest(`/api/sessions/${session.sessionId}/host-entries`, 'POST', {
       number: String(num),
       nickname: customName ? customName.trim() : '',
-      betAmount: isCashRound ? numericBet : 0
+      betAmount: isCashRound ? numericBet : 0,
+      ageVerified: true
     });
     setIsAssigningPick(false);
     if (data?.success) {
       setHostPickFeedback(
-        isCashRound
-          ? `Assigned #${data.number} to ${data.nickname} (Bet R${data.betAmount} → Win R${Math.round(data.betAmount * 1.5 * 100) / 100}–R${Math.round(data.betAmount * 3 * 100) / 100})`
-          : `Assigned #${data.number} to ${data.nickname}`
+        isWeightedCash
+          ? `Assigned #${data.number} to ${data.nickname} (Stake R${data.betAmount} • Tx: ${data.txId || 'OK'} → Win R10/R20/R50/R100)`
+          : isCashRound
+            ? `Assigned #${data.number} to ${data.nickname} (Bet R${data.betAmount} • Tx: ${data.txId || 'OK'} → Win R${Math.round(data.betAmount * 1.5 * 100) / 100}–R${Math.round(data.betAmount * 3 * 100) / 100})`
+            : `Assigned #${data.number} to ${data.nickname} (Tx: ${data.txId || 'OK'})`
       );
       setWalkInName('');
       setSelectedPickNum(null);
     }
   };
 
-  // Switch active round prize (e.g. toggle between 3x Cash Multiplier and Standard Prizes)
+  // Switch active round prize (e.g. toggle between Weighted Cash Schedule, 3x Cash Multiplier, and Standard Prizes)
   const handleChangeRoundPrize = async (newPrizeId) => {
     if (!session?.sessionId) return;
     setSelectedPrizeId(newPrizeId);
+    if (newPrizeId === 'prize_weighted_cash') {
+      setWalkInBet(10);
+    } else if (newPrizeId === 'prize_cash_3x' && Number(walkInBet) < 5) {
+      setWalkInBet(5);
+    }
     const data = await apiRequest(`/api/sessions/${session.sessionId}/prize`, 'POST', { prizeId: newPrizeId });
     if (data?.success) {
       fetchPrizes();
     }
+  };
+
+  // Replenish ring-fenced cash-prize reserve
+  const handleReplenishReserve = async (amountToAdd = replenishAmount) => {
+    if (!session?.sessionId) return;
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/reserve/replenish`, 'POST', {
+      amount: Number(amountToAdd) || 500,
+      notes: 'Owner cash-prize reserve replenishment'
+    });
+    if (data?.success) {
+      setHostPickFeedback(`✅ Cash reserve replenished by +R${data.addedAmount} (Total Reserve Ceiling: R${data.newMonthlyCashReserve})`);
+    }
+  };
+
+  // Toggle emergency suspension of new paid entries
+  const handleToggleEmergencySuspend = async (suspended) => {
+    if (!session?.sessionId) return;
+    await apiRequest(`/api/sessions/${session.sessionId}/emergency-suspend`, 'POST', {
+      suspended: Boolean(suspended),
+      reason: suspended ? 'Operator emergency pause' : 'Operator resumed entries'
+    });
+  };
+
+  // Update financial & commercial model parameters
+  const handleUpdateFinancialSettings = async (partialSettings) => {
+    if (!session?.sessionId) return;
+    await apiRequest(`/api/sessions/${session.sessionId}/financial-settings`, 'POST', partialSettings);
   };
 
   // Host releases/removes a claimed number while registration is open
@@ -841,10 +894,14 @@ export function HostView() {
   const status = session.status;
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
-  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier');
+  const isWeightedCash = Boolean(currentRound?.isWeightedCash || prize?.prize_type === 'weighted_cash');
+  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier' || isWeightedCash);
   const canSpin = status === 'REGISTRATION_CLOSED' && session.playerCount > 0;
   const isSpinning = status === 'SPINNING';
   const isResult = status === 'RESULT';
+  const stats = session.houseCashStats || {};
+  const profModel = stats.profitabilityModel || null;
+  const finSettings = stats.financialSettings || {};
 
   const activeShopCode = linkedShop?.shopCode || session.shopCode || session.shortCode;
   const activeShopName = linkedShop?.name || session.shopName || 'CHILLAX';
@@ -883,7 +940,7 @@ export function HostView() {
               {mongoStatus?.connected ? 'chillaxgaminghub' : 'Connect MongoDB'}
             </span>
           </button>
-          <button onClick={handleLoadHistory} className="host-icon-btn" title="View History">
+          <button onClick={handleLoadHistory} className="host-icon-btn" title="View History & Ledger">
             <History size={18} />
           </button>
           <button
@@ -905,6 +962,44 @@ export function HostView() {
 
       {actionError && <div className="host-error-alert">{actionError}</div>}
 
+      {/* Reserve Exhaustion / Warning / Emergency Banner */}
+      {stats.emergencySuspended && (
+        <div className="host-error-alert flex justify-between items-center">
+          <span>🚨 <strong>EMERGENCY SUSPENDED:</strong> New paid entries are paused. Existing obligations remain intact.</span>
+          <button
+            type="button"
+            onClick={() => handleToggleEmergencySuspend(false)}
+            className="profit-toggle-btn"
+          >
+            Resume Entries
+          </button>
+        </div>
+      )}
+      {!stats.emergencySuspended && stats.isReserveExhausted && (
+        <div className="host-error-alert flex justify-between items-center">
+          <span>🛑 <strong>RESERVE LIMIT REACHED (R{stats.committedCashTotal} / R{stats.monthlyCashReserve}):</strong> New paid cash entries are suspended until the ring-fenced reserve is replenished.</span>
+          <button
+            type="button"
+            onClick={() => handleReplenishReserve(500)}
+            className="profit-toggle-btn"
+          >
+            + Replenish R500
+          </button>
+        </div>
+      )}
+      {!stats.emergencySuspended && !stats.isReserveExhausted && stats.isReserveWarning && (
+        <div className="host-warning-alert flex justify-between items-center">
+          <span>⚠️ <strong>RESERVE WARNING (R{stats.committedCashTotal} / R{stats.monthlyCashReserve} Committed):</strong> Exceeded R{stats.warningThreshold} warning threshold. Available reserve: R{stats.availableCashReserve}.</span>
+          <button
+            type="button"
+            onClick={() => handleReplenishReserve(500)}
+            className="profit-toggle-btn"
+          >
+            + Top Up R500
+          </button>
+        </div>
+      )}
+
       {/* Status Pod */}
       <div className="host-status-pod">
         <div className="status-pod-item">
@@ -923,13 +1018,17 @@ export function HostView() {
         </div>
       </div>
 
-      {/* Active Prize Card & Cash Multiplier Mode Switcher */}
+      {/* Active Prize Card & Cash Mode Switcher */}
       {prize && (
         <div className="host-active-prize-card">
           <div className="prize-indicator" style={{ background: prize.color || '#00f2fe' }} />
           <div className="prize-info">
             <div className="prize-label">
-              {isCashRound ? '💰 SMART CASH MODE (1.5X • 2X • 3X | MIN R5)' : 'CURRENT ROUND PRIZE'}
+              {isWeightedCash
+                ? '🎯 WEIGHTED CASH SCHEDULE (R10 / R20 / R50 / R100 • 4.625% WIN RATE)'
+                : isCashRound
+                  ? '💰 SMART CASH MODE (1.5X • 2X • 3X | MIN R5)'
+                  : 'CURRENT ROUND PRIZE'}
             </div>
             {status === 'REGISTRATION_OPEN' ? (
               <select
@@ -948,28 +1047,38 @@ export function HostView() {
             )}
           </div>
           {status === 'REGISTRATION_OPEN' && (
-            <button
-              type="button"
-              onClick={() => {
-                if (isCashRound) {
-                  const firstStd = prizes.find((p) => p.prize_type !== 'cash_multiplier');
-                  if (firstStd) handleChangeRoundPrize(firstStd.id);
-                } else {
-                  handleChangeRoundPrize('prize_cash_3x');
-                }
-              }}
-              className={`host-cash-mode-btn ${isCashRound ? 'active' : ''}`}
-              title="Toggle Smart Cash Multiplier Mode (1.5x / 2x / 3x)"
-            >
-              {isCashRound ? '💰 Cash Mode ON' : '💰 Use Cash Mode'}
-            </button>
+            <div className="flex gap-1 flex-wrap">
+              <button
+                type="button"
+                onClick={() => handleChangeRoundPrize('prize_weighted_cash')}
+                className={`host-cash-mode-btn ${isWeightedCash ? 'active' : ''}`}
+                title="R10 Spin Weighted Cash Schedule (R10 @ 4%, R20 @ 0.5%, R50 @ 0.1%, R100 @ 0.025%)"
+              >
+                🎯 R10 Cash Schedule
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (prize.prize_type === 'cash_multiplier') {
+                    const firstStd = prizes.find((p) => p.prize_type !== 'cash_multiplier' && p.prize_type !== 'weighted_cash');
+                    if (firstStd) handleChangeRoundPrize(firstStd.id);
+                  } else {
+                    handleChangeRoundPrize('prize_cash_3x');
+                  }
+                }}
+                className={`host-cash-mode-btn ${prize.prize_type === 'cash_multiplier' ? 'active' : ''}`}
+                title="Toggle Smart Cash Multiplier Mode (1.5x / 2x / 3x)"
+              >
+                {prize.prize_type === 'cash_multiplier' ? '💰 1.5x–3x ON' : '💰 1.5x–3x Mode'}
+              </button>
+            </div>
           )}
           <Award size={24} style={{ color: prize.color || '#00f2fe' }} />
         </div>
       )}
 
-      {/* House Profit Protection & Multiplier Telemetry Pod (Cash Mode) */}
-      {isCashRound && session.houseCashStats && (
+      {/* House Profit Protection & Ring-Fenced R1,000 Cash Reserve Engine */}
+      {session.houseCashStats && (
         <div className={`host-profit-engine-card ${showProfitEngine ? 'expanded' : 'collapsed'}`}>
           <div
             className="profit-engine-header clickable"
@@ -983,11 +1092,19 @@ export function HostView() {
               }
             }}
           >
-            <span className="profit-engine-title">🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x)</span>
+            <span className="profit-engine-title">
+              🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x) &amp; R{stats.monthlyCashReserve || 1000} RESERVE
+            </span>
             <div className="profit-engine-header-right">
               {showProfitEngine && (
-                <span className={`profit-3x-status ${session.houseCashStats.is3xReady ? 'unlocked' : 'locked'}`}>
-                  {session.houseCashStats.is3xReady ? '🔓 3x Jackpot Unlocked' : '🔒 3x Gated (1.5x / 2x Active)'}
+                <span className={`profit-3x-status ${stats.isReserveExhausted ? 'locked' : stats.is3xReady ? 'unlocked' : 'locked'}`}>
+                  {stats.isReserveExhausted
+                    ? '🛑 Reserve Exhausted'
+                    : isWeightedCash
+                      ? `🎯 R${stats.availableCashReserve} Reserve Available`
+                      : stats.is3xReady
+                        ? '🔓 3x Jackpot Unlocked'
+                        : '🔒 3x Gated (1.5x / 2x Active)'}
                 </span>
               )}
               <button
@@ -1012,25 +1129,363 @@ export function HostView() {
             </div>
           </div>
           {showProfitEngine && (
-            <div className="profit-metrics-grid">
-              <div className="profit-metric-box">
-                <span className="metric-label">Collected</span>
-                <span className="metric-val">R{session.houseCashStats.historicalCollected + (session.totalBets || 0)}</span>
+            <>
+              <div className="profit-metrics-grid">
+                <div className="profit-metric-box">
+                  <span className="metric-label">Collected (Stakes)</span>
+                  <span className="metric-val">R{stats.historicalCollected + (session.totalBets || 0)}</span>
+                </div>
+                <div className="profit-metric-box">
+                  <span className="metric-label">Settled Paid Out</span>
+                  <span className="metric-val">R{stats.settledCashPaid ?? stats.historicalPaidOut}</span>
+                </div>
+                <div className="profit-metric-box" title="Unredeemed winnings are never counted as available cash">
+                  <span className="metric-label">Unredeemed Liability</span>
+                  <span className="metric-val text-gold">R{stats.outstandingCashLiabilities || 0}</span>
+                </div>
+                <div className="profit-metric-box">
+                  <span className="metric-label">Net Spin Contrib.</span>
+                  <span className="metric-val text-green">
+                    R{Math.round(((stats.netSpinContribution ?? stats.netProfit) + (session.totalBets || 0)) * 100) / 100}
+                  </span>
+                </div>
+                <div className="profit-metric-box">
+                  <span className="metric-label">Ring-Fenced Reserve</span>
+                  <span className="metric-val text-cyan">
+                    R{stats.availableCashReserve} / R{stats.monthlyCashReserve}
+                  </span>
+                </div>
+                <div className="profit-metric-box">
+                  <span className="metric-label">Daily / Weekly Cap</span>
+                  <span className="metric-val">
+                    R{stats.dailyCashCommitted}/R{stats.dailyExposureLimit} • R{stats.weeklyCashCommitted}/R{stats.weeklyExposureLimit}
+                  </span>
+                </div>
+                <div className="profit-metric-box">
+                  <span className="metric-label">Surplus (3x Gate)</span>
+                  <span className="metric-val text-gold">R{stats.surplusReserve}</span>
+                </div>
+                <div className="profit-metric-box">
+                  <span className="metric-label">Unique / Repeat</span>
+                  <span className="metric-val">
+                    {stats.uniquePlayersCount || 0} ({stats.repeatPlaysCount || 0} rpt)
+                  </span>
+                </div>
               </div>
-              <div className="profit-metric-box">
-                <span className="metric-label">Paid Out</span>
-                <span className="metric-val">R{session.houseCashStats.historicalPaidOut}</span>
+
+              <div className="reserve-controls-bar">
+                <div className="reserve-controls-left">
+                  <span className="text-xs text-muted">
+                    Warn @ R{stats.warningThreshold} • Auto-Stop @ R{stats.suspensionThreshold} • Max Single Win R{stats.maxSingleCashPrize || 100}
+                  </span>
+                </div>
+                <div className="reserve-controls-actions">
+                  <button
+                    type="button"
+                    onClick={() => handleReplenishReserve(500)}
+                    className="profit-toggle-btn"
+                    title="Add R500 to the ring-fenced cash-prize reserve"
+                  >
+                    + Replenish R500
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleEmergencySuspend(!stats.emergencySuspended)}
+                    className={`profit-toggle-btn ${stats.emergencySuspended ? 'text-green' : 'text-danger'}`}
+                    title="Emergency control: suspend or resume new paid entries without deleting existing obligations"
+                  >
+                    {stats.emergencySuspended ? '✓ Resume Entries' : '🚨 Emergency Suspend'}
+                  </button>
+                </div>
               </div>
-              <div className="profit-metric-box">
-                <span className="metric-label">Net Profit</span>
-                <span className="metric-val text-green">
-                  R{Math.round((session.houseCashStats.netProfit + (session.totalBets || 0)) * 100) / 100}
-                </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Owner Profitability Model, Weighted Prize Schedule & Launch Plan Card (PDF Spec) */}
+      {profModel && (
+        <div className={`host-profit-engine-card ${showOwnerModel ? 'expanded' : 'collapsed'}`}>
+          <div
+            className="profit-engine-header clickable"
+            onClick={toggleOwnerModel}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleOwnerModel();
+              }
+            }}
+          >
+            <span className="profit-engine-title">
+              📊 OWNER PROFITABILITY MODEL, PRIZE SCHEDULE &amp; LAUNCH PLAN
+            </span>
+            <div className="profit-engine-header-right">
+              <span className="text-xs text-cyan">
+                {profModel.spinPrice ? `R${profModel.spinPrice}/spin` : 'R10/spin'} • EV R{profModel.expectedPayoutPerSpin}/spin
+              </span>
+              <button
+                type="button"
+                className="profit-toggle-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleOwnerModel();
+                }}
+              >
+                {showOwnerModel ? <><EyeOff size={13} /> Hide</> : <><Eye size={13} /> Show Plan</>}
+              </button>
+            </div>
+          </div>
+
+          {showOwnerModel && (
+            <div className="owner-model-body">
+              {/* Sub-navigation Tabs */}
+              <div className="owner-model-tabs">
+                <button
+                  type="button"
+                  onClick={() => setOwnerModelTab('profitability')}
+                  className={`range-pill ${ownerModelTab === 'profitability' ? 'active' : ''}`}
+                >
+                  📈 Profitability &amp; Fixed Costs
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOwnerModelTab('schedule')}
+                  className={`range-pill ${ownerModelTab === 'schedule' ? 'active' : ''}`}
+                >
+                  🎯 Weighted Cash Schedule (4.625%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOwnerModelTab('calendar')}
+                  className={`range-pill ${ownerModelTab === 'calendar' ? 'active' : ''}`}
+                >
+                  📅 Hybrid Promo Calendar &amp; Rules
+                </button>
               </div>
-              <div className="profit-metric-box">
-                <span className="metric-label">Surplus Reserve</span>
-                <span className="metric-val text-gold">R{session.houseCashStats.surplusReserve}</span>
-              </div>
+
+              {ownerModelTab === 'profitability' && (
+                <div className="owner-tab-panel">
+                  {/* Commercial Decision Configurator (Page 6 of PDF) */}
+                  <div className="configurator-grid">
+                    <div className="config-item">
+                      <label className="text-xs text-muted block mb-1">Daily Footfall (26 days/mo)</label>
+                      <div className="flex gap-1">
+                        {[50, 70].map((cust) => (
+                          <button
+                            key={cust}
+                            type="button"
+                            onClick={() => handleUpdateFinancialSettings({ dailyCustomers: cust })}
+                            className={`wheel-preset-pill ${Number(profModel.dailyCustomers) === cust ? 'active' : ''}`}
+                          >
+                            {cust}/day ({cust * 26}/mo)
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="config-item">
+                      <label className="text-xs text-muted block mb-1">Proposed Spin Price</label>
+                      <div className="flex gap-1">
+                        {[5, 10, 20].map((price) => (
+                          <button
+                            key={price}
+                            type="button"
+                            onClick={() => {
+                              setWalkInBet(price);
+                              handleUpdateFinancialSettings({ proposedSpinPrice: price });
+                            }}
+                            className={`wheel-preset-pill ${Number(profModel.spinPrice) === price ? 'active' : ''}`}
+                          >
+                            R{price}{price === 10 ? ' (Rec)' : ''}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="config-item">
+                      <label className="text-xs text-muted block mb-1">Operating Route</label>
+                      <div className="flex gap-1">
+                        {[
+                          { id: 'PARTNER', label: 'Partner' },
+                          { id: 'OWN_LICENCE', label: 'Own Licence' },
+                          { id: 'COMPARE', label: 'Compare' }
+                        ].map((rt) => (
+                          <button
+                            key={rt.id}
+                            type="button"
+                            onClick={() => handleUpdateFinancialSettings({ operatingRoute: rt.id })}
+                            className={`wheel-preset-pill ${profModel.operatingRoute === rt.id ? 'active' : ''}`}
+                          >
+                            {rt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="config-item">
+                      <label className="text-xs text-muted block mb-1">Operator Revenue Share</label>
+                      <div className="flex gap-1">
+                        {[0, 10, 20, 30].map((pct) => (
+                          <button
+                            key={pct}
+                            type="button"
+                            onClick={() => handleUpdateFinancialSettings({ operatorSharePct: pct })}
+                            className={`wheel-preset-pill ${Number(profModel.operatorSharePct) === pct ? 'active' : ''}`}
+                          >
+                            {pct}%
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Participation Scenarios Table (25%, 50%, 100%) */}
+                  <div className="owner-table-wrap mt-2">
+                    <div className="text-xs font-bold text-cyan mb-1">
+                      MONTHLY SPIN &amp; WIN PARTICIPATION SCENARIOS ({profModel.monthlyCustomerVisits} visits/mo @ R{profModel.spinPrice}/spin)
+                    </div>
+                    <table className="history-table">
+                      <thead>
+                        <tr>
+                          <th>Uptake</th>
+                          <th>Spins/Mo</th>
+                          <th>Gross Rev</th>
+                          <th>Exp. Cash Payout</th>
+                          <th>Op. Share ({profModel.operatorSharePct}%)</th>
+                          <th>Net Contribution</th>
+                          <th>R1k Reserve Left</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(profModel.scenarios || []).map((sc) => (
+                          <tr
+                            key={sc.uptakePct}
+                            className={Number(profModel.targetUptakeRatePct) === sc.uptakePct ? 'selected-row' : ''}
+                            onClick={() => handleUpdateFinancialSettings({ targetUptakeRatePct: sc.uptakePct })}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td>
+                              <strong>{sc.uptakePct}%</strong> {sc.uptakePct === 50 ? '⭐' : ''}
+                            </td>
+                            <td>{sc.monthlySpins}</td>
+                            <td>R{sc.grossSpinRevenue}</td>
+                            <td>R{sc.expectedCashPayout}</td>
+                            <td>R{sc.operatorShareAmount}</td>
+                            <td className="text-green font-bold">R{sc.netSpinContribution}</td>
+                            <td className={sc.reserveRemaining >= 0 ? 'text-cyan' : 'text-danger'}>
+                              R{sc.reserveRemaining}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Full Business Fixed-Cost Coverage Summary (Rent R14k + Energy R6.5k-R10k) */}
+                  {profModel.selectedScenario && (
+                    <div className="profit-metrics-grid mt-2">
+                      <div className="profit-metric-box">
+                        <span className="metric-label">Ordinary Sales (26d)</span>
+                        <span className="metric-val">R{profModel.monthlyOrdinarySales}</span>
+                      </div>
+                      <div className="profit-metric-box">
+                        <span className="metric-label">Ordinary 65% Margin</span>
+                        <span className="metric-val">R{profModel.ordinaryGrossContribution}</span>
+                      </div>
+                      <div className="profit-metric-box">
+                        <span className="metric-label">Rent + Energy Fixed</span>
+                        <span className="metric-val text-danger">
+                          R{profModel.combinedFixedLow}–R{profModel.combinedFixedHigh}
+                        </span>
+                      </div>
+                      <div className="profit-metric-box">
+                        <span className="metric-label">Before Spin &amp; Win</span>
+                        <span className="metric-val text-danger">
+                          R{profModel.ordinaryNetLowEnergy} to R{profModel.ordinaryNetHighEnergy}
+                        </span>
+                      </div>
+                      <div className="profit-metric-box">
+                        <span className="metric-label">After Spin ({profModel.targetUptakeRatePct}% Uptake)</span>
+                        <span className={`metric-val ${profModel.selectedScenario.totalShopNetLowEnergy >= 0 ? 'text-green' : 'text-gold'}`}>
+                          R{profModel.selectedScenario.totalShopNetLowEnergy} to R{profModel.selectedScenario.totalShopNetHighEnergy}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="text-xs text-muted mt-2">
+                    <strong>Formula:</strong> <code>{stats.formulaText}</code>
+                  </div>
+                </div>
+              )}
+
+              {ownerModelTab === 'schedule' && (
+                <div className="owner-tab-panel">
+                  <div className="text-xs text-muted mb-2">
+                    <strong>Section 2 — Weighted Cash-Prize Schedule (4,000-Slot Engine):</strong> TV displays the 20/22-section wheel while the server selects outcomes using the auditable weighted table below (4.625% win probability, R0.575 expected payout per R10 spin).
+                  </div>
+                  <table className="history-table">
+                    <thead>
+                      <tr>
+                        <th>Prize Tier</th>
+                        <th>Win Probability</th>
+                        <th>Approximate Odds</th>
+                        <th>Weighting</th>
+                        <th>Expected Cost / Spin</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats.weightedCashSchedule?.tiers || []).map((tier) => (
+                        <tr key={tier.id}>
+                          <td className="font-bold text-gold">{tier.label}</td>
+                          <td className="text-cyan">{tier.probabilityPct}%</td>
+                          <td>{tier.oddsLabel}</td>
+                          <td>{tier.weight} / 4,000</td>
+                          <td>R{tier.expectedCostPerSpin.toFixed(3)}</td>
+                        </tr>
+                      ))}
+                      <tr>
+                        <td><strong>Total Win / Non-Win</strong></td>
+                        <td className="text-green font-bold">4.625% Win (95.375% House)</td>
+                        <td>~1 in 21.62 spins</td>
+                        <td>185 / 4,000</td>
+                        <td className="text-green font-bold">R0.575 / R10 spin</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {ownerModelTab === 'calendar' && (
+                <div className="owner-tab-panel">
+                  <div className="text-xs font-bold text-cyan mb-1">
+                    HYBRID PROMOTIONAL CALENDAR (SPIN &amp; WIN + TOURNAMENTS)
+                  </div>
+                  <table className="history-table mb-2">
+                    <thead>
+                      <tr>
+                        <th>Days</th>
+                        <th>Activity</th>
+                        <th>Commercial Purpose</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(stats.promotionalCalendar || []).map((item) => (
+                        <tr key={item.days}>
+                          <td className="font-bold text-gold">{item.days}</td>
+                          <td className="text-cyan">{item.activity}</td>
+                          <td>{item.purpose}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="text-xs text-muted">
+                    <strong>Ring-Fenced Reserve Rules:</strong> (1) Keep R1,000 in a separate cash ledger; (2) Record every winning result immediately; (3) Never count unredeemed winnings as available cash; (4) Auto-suspend new paid entries before reserve is exhausted; (5) Never change prize/odds after customers have paid in a round.
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1046,7 +1501,7 @@ export function HostView() {
               className="arcade-btn-warning w-full"
             >
               <Lock size={20} className="inline-icon" />
-              Lock Entries & Prepare Spin ({session.playerCount} Joined)
+              Lock Entries &amp; Prepare Spin ({session.playerCount} Joined)
             </button>
             {session.playerCount === 0 && (
               <p className="host-note">Waiting for at least 1 player to claim a number.</p>
@@ -1069,7 +1524,7 @@ export function HostView() {
                 <Unlock size={14} className="inline-icon" /> Re-open Entries
               </button>
               <button onClick={handleCancelRound} className="sub-btn text-danger">
-                <XCircle size={14} className="inline-icon" /> Cancel Round
+                <XCircle size={14} className="inline-icon" /> Cancel &amp; Refund Round
               </button>
             </div>
           </div>
@@ -1091,6 +1546,8 @@ export function HostView() {
                   const isHostEntry = winningEntry?.player_token?.startsWith('host_pick_');
                   const winBet = Number(winningEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
                   const winPayout = Number(winningEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
+                  const redCode = currentRound?.redemptionCode;
+                  const winTxId = winningEntry?.tx_id || currentRound?.winnerTxId;
                   return (
                     <div className="result-announcement">
                       <span className="result-num-pill">#{currentRound.winningNumber}</span>
@@ -1101,10 +1558,16 @@ export function HostView() {
                         </strong>
                         {isCashRound && winPayout > 0 ? (
                           <span className="text-green font-bold">
-                            💰 PAYOUT: R{winPayout} CASH ({currentRound?.appliedMultiplier || 1.5}x on R{winBet} bet)
+                            💰 PAYOUT: R{winPayout} CASH ({currentRound?.prizeTierLabel || `${currentRound?.appliedMultiplier || 1.5}x`} on R{winBet} stake)
                           </span>
                         ) : (
                           <span>Prize: {prize?.name}</span>
+                        )}
+                        {(redCode || winTxId) && (
+                          <span className="text-xs text-cyan block mt-1">
+                            {redCode && <>Redemption Code: <strong>{redCode}</strong> </>}
+                            {winTxId && <>• Tx: <code>{winTxId}</code></>}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -1115,13 +1578,13 @@ export function HostView() {
                 <div className="host-redemption-box">
                   <input
                     type="text"
-                    placeholder="Optional cashier notes (e.g. delivered snack)"
+                    placeholder={`Verify Redemption Code ${currentRound?.redemptionCode || ''} / cashier notes`}
                     value={redeemNotes}
                     onChange={(e) => setRedeemNotes(e.target.value)}
                     className="redeem-notes-input"
                   />
                   <button onClick={handleRedeemPrize} className="arcade-btn-success w-full">
-                    <CheckCircle2 size={18} className="inline-icon" /> Mark Prize as Redeemed
+                    <CheckCircle2 size={18} className="inline-icon" /> Mark Prize as Redeemed ({currentRound?.redemptionCode || 'Verified'})
                   </button>
                 </div>
               </>
@@ -1132,7 +1595,7 @@ export function HostView() {
                 </span>
                 <div className="result-details">
                   <strong className="text-danger">NO WINNER THIS ROUND</strong>
-                  <span className="text-muted">Landed on unclaimed number #{currentRound.winningNumber}. Prize carries over!</span>
+                  <span className="text-muted">Landed on unclaimed number #{currentRound.winningNumber}. House retains stakes!</span>
                 </div>
               </div>
             )}
@@ -1230,9 +1693,11 @@ export function HostView() {
           </div>
           {status === 'REGISTRATION_OPEN' && (
             <span className="host-grid-subtitle">
-              {isCashRound
-                ? '3x Cash Round: Enter player name + bet amount (min R5), then tap an open number.'
-                : "No phone? Enter a player's name below and tap an open number to claim it for them."}
+              {isWeightedCash
+                ? 'R10 Cash Schedule Round: Enter player name + stake (R10 recommended), then tap an open number. (18+ Only)'
+                : isCashRound
+                  ? '3x Cash Round: Enter player name + bet amount (min R5), then tap an open number. (18+ Only)'
+                  : "No phone? Enter a player's name below and tap an open number to claim it for them."}
             </span>
           )}
         </div>
@@ -1250,7 +1715,7 @@ export function HostView() {
             >
               {isCashRound && (
                 <div className="host-walkin-bet-row">
-                  <span className="walkin-bet-label">Bet (Min R5):</span>
+                  <span className="walkin-bet-label">{isWeightedCash ? 'Spin Stake (Rec R10):' : 'Bet (Min R5):'}</span>
                   <div className="walkin-bet-presets">
                     {[5, 10, 20, 50].map((amt) => (
                       <button
@@ -1275,7 +1740,9 @@ export function HostView() {
                     />
                   </div>
                   <span className="walkin-payout-tag">
-                    1.5x–3x: R{Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 1.5 * 100) / 100 : 0}–R{Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 3 * 100) / 100 : 0}
+                    {isWeightedCash
+                      ? 'Tiers: R10 / R20 / R50 / R100'
+                      : `1.5x–3x: R${Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 1.5 * 100) / 100 : 0}–R${Number(walkInBet) >= 5 ? Math.round(Number(walkInBet) * 3 * 100) / 100 : 0}`}
                   </span>
                 </div>
               )}
@@ -1319,9 +1786,12 @@ export function HostView() {
                       Claimed by <strong>{selEntry.nickname}</strong>{' '}
                       {isCashRound && selEntry.bet_amount > 0 && (
                         <strong className="text-green">
-                          • Bet R{selEntry.bet_amount} (Win R{selEntry.payout_amount})
+                          • Stake R{selEntry.bet_amount}
                         </strong>
                       )}{' '}
+                      {selEntry.tx_id && (
+                        <span className="text-xs text-cyan">[{selEntry.tx_id}] </span>
+                      )}
                       <span className="text-muted text-xs">
                         ({isHostEntry ? 'Host Pick' : 'Phone'})
                       </span>
@@ -1334,7 +1804,7 @@ export function HostView() {
                       onClick={() => handleHostUnclaimNumber(selectedPickNum)}
                       className="host-free-num-btn"
                     >
-                      <Trash2 size={14} className="inline-icon" /> Free #{selectedPickNum}
+                      <Trash2 size={14} className="inline-icon" /> Refund &amp; Free #{selectedPickNum}
                     </button>
                     <button
                       type="button"
@@ -1381,7 +1851,7 @@ export function HostView() {
                   className="chip-player"
                   title={
                     entry
-                      ? `${entry.nickname}${entry.bet_amount > 0 ? ` (Bet R${entry.bet_amount} → Win R${entry.payout_amount})` : ''}`
+                      ? `${entry.nickname}${entry.bet_amount > 0 ? ` (Stake R${entry.bet_amount})` : ''}${entry.tx_id ? ` [${entry.tx_id}]` : ''}`
                       : 'Tap to claim'
                   }
                 >
@@ -1400,7 +1870,7 @@ export function HostView() {
         <div className="flex justify-between items-center mb-1">
           <h4 className="text-sm font-bold text-cyan">WINNER DIFFICULTY MODE</h4>
           <span className="text-xs text-gold">
-            {session.winnerMode === 'TRUE_ODDS' ? '🎯 Hard (Arcade Odds)' : '🎁 Easy (Always Wins)'}
+            {session.winnerMode === 'TRUE_ODDS' ? '🎯 Hard (Arcade / Weighted Odds)' : '🎁 Easy (Always Wins)'}
           </span>
         </div>
         <div className="range-selector-row">
@@ -1411,7 +1881,7 @@ export function HostView() {
               await apiRequest(`/api/sessions/${session.sessionId}/mode`, 'POST', { mode: 'TRUE_ODDS' });
             }}
           >
-            🎯 Hard (1 in {session.wheelNumbers?.length || session.numberRange.max} Odds)
+            🎯 Hard ({isWeightedCash ? '4.625% Weighted Schedule' : `1 in ${session.wheelNumbers?.length || session.numberRange.max} Odds`})
           </button>
           <button
             type="button"
@@ -1424,7 +1894,9 @@ export function HostView() {
           </button>
         </div>
         <p className="text-xs text-muted mt-1">
-          In <strong>Hard Mode</strong>, the wheel spins across all {session.wheelNumbers?.length || session.numberRange.max} pockets{session.hasDoubleZero !== false ? ' (including 0 & 00)' : ''}. If it lands on an unclaimed number, there is NO WINNER.
+          {isWeightedCash
+            ? 'In Weighted Cash Schedule Mode, the server uses the 4,000-slot weighted table (R10 @ 4%, R20 @ 0.5%, R50 @ 0.1%, R100 @ 0.025% = 4.625% total win rate, EV R0.575/spin).'
+            : `In Hard Mode, the wheel spins across all ${session.wheelNumbers?.length || session.numberRange.max} pockets${session.hasDoubleZero !== false ? ' (including 0 & 00)' : ''}. If it lands on an unclaimed number, there is NO WINNER.`}
         </p>
       </div>
 
@@ -1433,7 +1905,7 @@ export function HostView() {
         <div className="host-modal-overlay">
           <div className="host-modal-card">
             <div className="modal-header">
-              <h3>Session Rounds History</h3>
+              <h3>Session Rounds History &amp; Redemption Codes</h3>
               <button onClick={() => setShowHistory(false)} className="modal-close-btn">✕</button>
             </div>
             <div className="modal-body">
@@ -1446,7 +1918,8 @@ export function HostView() {
                       <th>Rnd</th>
                       <th>Win #</th>
                       <th>Winner</th>
-                      <th>Prize</th>
+                      <th>Prize / Payout</th>
+                      <th>Code</th>
                       <th>Redeemed</th>
                     </tr>
                   </thead>
@@ -1457,15 +1930,20 @@ export function HostView() {
                         <td className="text-cyan font-bold">{r.winning_number ? `#${r.winning_number}` : '—'}</td>
                         <td>{r.winner_nickname || '—'}</td>
                         <td>
-                          {r.prize_type === 'cash_multiplier' && r.winner_payout_amount > 0
-                            ? `R${r.winner_payout_amount} Cash (${r.applied_multiplier || 1.5}x R${r.winner_bet_amount})`
+                          {(r.prize_type === 'cash_multiplier' || r.prize_type === 'weighted_cash') && r.winner_payout_amount > 0
+                            ? `R${r.winner_payout_amount} Cash (${r.prize_tier_label || `${r.applied_multiplier || 1.5}x R${r.winner_bet_amount}`})`
                             : (r.prize_name || 'Standard')}
+                        </td>
+                        <td>
+                          {r.redemption_code ? <code className="text-cyan">{r.redemption_code}</code> : '—'}
                         </td>
                         <td>
                           {r.redeemed_at ? (
                             <span className="badge-redeemed">✓ Redeemed</span>
+                          ) : r.winning_entry_id ? (
+                            <span className="badge-pending">Unredeemed Liability</span>
                           ) : (
-                            <span className="badge-pending">Pending</span>
+                            <span className="text-muted">No Winner</span>
                           )}
                         </td>
                       </tr>

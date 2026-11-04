@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db, logAudit } from './db.js';
+import { db, logAudit, logReserveLedger } from './db.js';
 import {
   syncRecordToMongo,
   deleteRecordFromMongo,
@@ -21,6 +21,231 @@ export const ALLOWED_TRANSITIONS = {
   CANCELLED: ['IDLE', 'REGISTRATION_OPEN', 'ENDED'],
   ENDED: []
 };
+
+// Section 2 of Profitability Model & Launch Plan: Weighted Cash-Prize Schedule for a R10 spin
+// Total Win Probability = 4.625% (185 / 4,000) | Expected Cash Payout = R0.575 per R10 spin
+export const WEIGHTED_CASH_SCHEDULE = [
+  { prize: 100, probability: 0.00025, pctLabel: '0.025%', oddsLabel: '1 in 4,000', ticketsOutOf4000: 1,   expectedCost: 0.025 },
+  { prize: 50,  probability: 0.001,   pctLabel: '0.1%',   oddsLabel: '1 in 1,000', ticketsOutOf4000: 4,   expectedCost: 0.05  },
+  { prize: 20,  probability: 0.005,   pctLabel: '0.5%',   oddsLabel: '1 in 200',   ticketsOutOf4000: 20,  expectedCost: 0.10  },
+  { prize: 10,  probability: 0.04,    pctLabel: '4%',     oddsLabel: '1 in 25',    ticketsOutOf4000: 160, expectedCost: 0.40  }
+];
+
+// Section 1, 3, 5, 10, 11 of Launch Plan: Default Financial & Reserve Control Settings
+export const DEFAULT_FINANCIAL_SETTINGS = {
+  customersPerDay: 50,
+  avgOrdinarySpend: 20,
+  tradingDaysPerMonth: 26,
+  proposedSpinPrice: 10,
+  targetUptakePct: 50,
+  monthlyReserveLimit: 1000,
+  weeklyExposureLimit: 250,
+  dailyExposureLimit: 50,
+  maxSingleCashPrize: 100,
+  warningThreshold: 750,
+  suspensionThreshold: 1000,
+  replenishedReserve: 0,
+  emergencySuspended: false,
+  ordinaryContributionMarginPct: 65,
+  monthlyRent: 14000,
+  monthlyEnergyMin: 6500,
+  monthlyEnergyMax: 10000,
+  operatingRoute: 'PARTNER', // 'PARTNER' | 'OWN_LICENCE' | 'COMPARE'
+  operatorSharePct: 0,       // 0 | 10 | 20 | 30
+  paymentFeePct: 0,
+  nonCashPrizeCosts: 0,
+  otherDirectCosts: 0,
+  dailyOrdinarySalesRecorded: 0
+};
+
+// Section 6 of Launch Plan: Hybrid Promotional Calendar
+export const HYBRID_PROMOTIONAL_CALENDAR = [
+  {
+    days: 'Tue–Thu',
+    title: 'Daily Spin activity',
+    activity: 'Daily Spin activity',
+    description: 'Build awareness with the TV display, visible prize information and scheduled promotional activity. Focus on quieter trading periods.',
+    purpose: 'Build awareness with the TV display, visible prize information and scheduled promotional activity. Focus on quieter trading periods.',
+    recommendedMode: 'STANDARD_PROMO'
+  },
+  {
+    days: 'Friday',
+    title: 'Cash-prize feature',
+    activity: 'Cash-prize feature',
+    description: 'Advertise the scheduled cash-prize event and encourage adult customers to visit. Use only approved games and prize arrangements.',
+    purpose: 'Advertise the scheduled cash-prize event and encourage adult customers to visit. Use only approved games and prize arrangements.',
+    recommendedMode: 'WEIGHTED_CASH'
+  },
+  {
+    days: 'Saturday',
+    title: 'Gaming tournaments',
+    activity: 'Gaming tournaments (EA FC, Tekken, MK)',
+    description: 'Run EA FC, Tekken or Mortal Kombat tournaments. Tournament prizes should have a separately approved budget.',
+    purpose: 'Run EA FC, Tekken or Mortal Kombat tournaments. Tournament prizes should have a separately approved budget.',
+    recommendedMode: 'TOURNAMENT'
+  },
+  {
+    days: 'Month-end',
+    title: 'Monthly feature event',
+    activity: 'Monthly feature event',
+    description: 'Use a special event to bring back existing customers and attract new ones. Do not promise a jackpot larger than the funded and approved amount.',
+    purpose: 'Use a special event to bring back existing customers and attract new ones. Do not promise a jackpot larger than the funded and approved amount.',
+    recommendedMode: 'MONTHLY_FEATURE'
+  }
+];
+
+// Deterministic Profitability Model & Scenarios Calculator (Sections 1, 2, 4, 5, 10, 11 of PDF)
+export function calculateProfitabilityModel(overrides = {}) {
+  const cfg = { ...DEFAULT_FINANCIAL_SETTINGS, ...overrides };
+  const customersPerDay = Math.max(1, Number(cfg.dailyCustomers ?? cfg.customersPerDay) || 50);
+  const avgOrdinarySpend = Math.max(0, Number(cfg.avgOrdinarySpend) || 20);
+  const tradingDays = Math.max(1, Number(cfg.tradingDaysPerMonth) || 26);
+  const spinPrice = Math.max(5, Number(cfg.proposedSpinPrice) || 10);
+  const targetUptakePct = Number(cfg.targetUptakeRatePct ?? cfg.targetUptakePct) || 50;
+  const monthlyCashBudget = Math.max(0, Number(cfg.monthlyCashReserve ?? cfg.monthlyReserveLimit) || 1000);
+  const ordinaryMarginPct = Number(cfg.ordinaryGrossMarginPct ?? cfg.ordinaryContributionMarginPct) || 65;
+  const monthlyRent = Number(cfg.monthlyRent) || 14000;
+  const monthlyEnergyMin = Number(cfg.monthlyElectricityLow ?? cfg.monthlyEnergyMin) || 6500;
+  const monthlyEnergyMax = Number(cfg.monthlyElectricityHigh ?? cfg.monthlyEnergyMax) || 10000;
+  const operatorSharePct = Math.max(0, Number(cfg.operatorSharePct) || 0);
+  const paymentFeePct = Math.max(0, Number(cfg.paymentFeePct) || 0);
+  const nonCashPrizeCosts = Math.max(0, Number(cfg.nonCashPrizeCostMonthly ?? cfg.nonCashPrizeCosts) || 0);
+  const otherDirectCosts = Math.max(0, Number(cfg.otherDirectCostsMonthly ?? cfg.otherDirectCosts) || 0);
+
+  const dailyOrdinarySales = Math.round(customersPerDay * avgOrdinarySpend * 100) / 100;
+  const monthlyOrdinarySales = Math.round(dailyOrdinarySales * tradingDays * 100) / 100;
+  const monthlyCustomerVisits = customersPerDay * tradingDays;
+
+  // Section 5: Full business profitability baseline
+  const ordinaryContribution = Math.round(monthlyOrdinarySales * (ordinaryMarginPct / 100) * 100) / 100;
+  const fixedCostsMin = monthlyRent + monthlyEnergyMin;
+  const fixedCostsMax = monthlyRent + monthlyEnergyMax;
+  const remainingBeforeOtherMin = Math.round((ordinaryContribution - fixedCostsMin) * 100) / 100; // -R3,600
+  const remainingBeforeOtherMax = Math.round((ordinaryContribution - fixedCostsMax) * 100) / 100; // -R7,100
+
+  // Expected cash payout per spin scales with spinPrice (R0.575 per R10 spin = 5.75% of spin stake)
+  const expectedPayoutPerSpin = Math.round((0.575 * (spinPrice / 10)) * 1000) / 1000;
+
+  const buildScenario = (uptakePct, visits = monthlyCustomerVisits, ordSales = monthlyOrdinarySales) => {
+    const spins = Math.round(visits * (uptakePct / 100));
+    const spinRevenue = Math.round(spins * spinPrice * 100) / 100;
+    const totalTurnover = Math.round((ordSales + spinRevenue) * 100) / 100;
+    const expectedCashPayouts = Math.round(spins * expectedPayoutPerSpin * 100) / 100;
+    const spinRevenueAfterPayouts = Math.round((spinRevenue - expectedCashPayouts) * 100) / 100;
+    const cashBudgetRemaining = Math.round((monthlyCashBudget - expectedCashPayouts) * 100) / 100;
+    const operatorShareAmount = Math.round(spinRevenue * (operatorSharePct / 100) * 100) / 100;
+    const paymentFeesAmount = Math.round(spinRevenue * (paymentFeePct / 100) * 100) / 100;
+    const netSpinContribution = Math.round(
+      (spinRevenue - expectedCashPayouts - nonCashPrizeCosts - operatorShareAmount - paymentFeesAmount - otherDirectCosts) * 100
+    ) / 100;
+
+    return {
+      uptakePct,
+      customerVisits: visits,
+      ordinarySales: ordSales,
+      spinsPerMonth: spins,
+      monthlySpins: spins,
+      spinRevenue,
+      grossSpinRevenue: spinRevenue,
+      totalTurnover,
+      expectedCashPayouts,
+      expectedCashPayout: expectedCashPayouts,
+      spinRevenueAfterPayouts,
+      cashBudgetRemaining,
+      reserveRemaining: cashBudgetRemaining,
+      operatorShareAmount,
+      paymentFeesAmount,
+      netSpinContribution,
+      totalShopNetLowEnergy: Math.round((remainingBeforeOtherMin + netSpinContribution) * 100) / 100,
+      totalShopNetHighEnergy: Math.round((remainingBeforeOtherMax + netSpinContribution) * 100) / 100
+    };
+  };
+
+  const sc25 = buildScenario(25);
+  const sc50 = buildScenario(50);
+  const sc100 = buildScenario(100);
+  const scSelected = buildScenario(targetUptakePct);
+  const scGrowth70 = buildScenario(50, 70 * tradingDays, 70 * avgOrdinarySpend * tradingDays);
+
+  const scenariosList = [sc25, sc50, sc100];
+  scenariosList.uptake25 = sc25;
+  scenariosList.uptake50 = sc50;
+  scenariosList.uptake100 = sc100;
+  scenariosList.selected = scSelected;
+  scenariosList.growth70Customers = scGrowth70;
+
+  const remainingWithSpinMin = scSelected.totalShopNetLowEnergy;
+  const remainingWithSpinMax = scSelected.totalShopNetHighEnergy;
+
+  return {
+    dailyCustomers: customersPerDay,
+    avgOrdinarySpend,
+    tradingDaysPerMonth: tradingDays,
+    dailyOrdinarySales,
+    monthlyOrdinarySales,
+    monthlyCustomerVisits,
+    ordinaryGrossContribution: ordinaryContribution,
+    combinedFixedLow: fixedCostsMin,
+    combinedFixedHigh: fixedCostsMax,
+    ordinaryNetLowEnergy: remainingBeforeOtherMin,
+    ordinaryNetHighEnergy: remainingBeforeOtherMax,
+    spinPrice,
+    expectedPayoutPerSpin,
+    targetUptakeRatePct: targetUptakePct,
+    operatingRoute: cfg.operatingRoute || 'PARTNER',
+    operatorSharePct,
+    selectedScenario: scSelected,
+    assumptions: {
+      customersPerDay,
+      avgOrdinarySpend,
+      tradingDaysPerMonth: tradingDays,
+      dailyOrdinarySales,
+      monthlyOrdinarySales,
+      monthlyCustomerVisits,
+      proposedSpinPrice: spinPrice,
+      targetUptakePct,
+      monthlyCashBudget,
+      maxCashPrizePerWin: Number(cfg.maxSingleCashPrize) || 100,
+      expectedPayoutPerSpin,
+      totalWinProbabilityPct: 4.625,
+      operatingRoute: cfg.operatingRoute || 'PARTNER',
+      operatorSharePct
+    },
+    scenarios: scenariosList,
+    fullBusinessProfitability: {
+      ordinarySales: monthlyOrdinarySales,
+      ordinaryContributionMarginPct: ordinaryMarginPct,
+      ordinaryContribution,
+      monthlyRent,
+      monthlyEnergyMin,
+      monthlyEnergyMax,
+      combinedFixedCostsMin: fixedCostsMin,
+      combinedFixedCostsMax: fixedCostsMax,
+      remainingBeforeSpinMin: remainingBeforeOtherMin,
+      remainingBeforeSpinMax: remainingBeforeOtherMax,
+      remainingWithSpinMin,
+      remainingWithSpinMax
+    }
+  };
+}
+
+// Generate unique transaction ID for every paid/free entry (Section 7 Step 3 & Section 8)
+export function generateTransactionId(shopCode = 'CHX') {
+  const cleanShop = String(shopCode || 'CHX').replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 6) || 'CHX';
+  const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const randPart = crypto.randomBytes(3).toString('hex').toUpperCase();
+  return `TX-${cleanShop}-${datePart}-${randPart}`;
+}
+
+// Generate unique redemption code for winner verification (Section 8)
+export function generateRedemptionCode(roundNumber = 1) {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += chars[crypto.randomInt(0, chars.length)];
+  }
+  return `CLX-R${roundNumber}-${code}`;
+}
 
 // Generate a random 5-character uppercase alphanumeric short code (avoiding confusing chars like 0/O, 1/I)
 export function generateShortCode() {
@@ -114,56 +339,302 @@ export class GameEngine {
     if (row) syncRecordToMongo('entries', row);
   }
 
-  // Compute real-time house treasury & profit reserve telemetry for dynamic multiplier gating
+  // Compute real-time house treasury, ring-fenced R1,000 cash reserve, exposure limits & owner dashboard telemetry
   getHouseCashStats(sessionId, excludeRoundId = null) {
+    const sessionRow = db.prepare('SELECT settings_json FROM sessions WHERE id = ?').get(sessionId);
+    let sessionSettings = {};
+    if (sessionRow?.settings_json) {
+      try {
+        sessionSettings = JSON.parse(sessionRow.settings_json);
+      } catch {}
+    }
+    const finSettings = {
+      ...DEFAULT_FINANCIAL_SETTINGS,
+      ...(sessionSettings.financial || {}),
+      ...(sessionSettings.financialSettings || {})
+    };
+
     const resolvedRounds = db.prepare(`
-      SELECT id, winning_entry_id, applied_multiplier
+      SELECT id, winning_entry_id, applied_multiplier, started_at, result_at
       FROM rounds
       WHERE session_id = ? AND status IN ('SPINNING', 'RESULT')
       ORDER BY round_number DESC
     `).all(sessionId);
 
+    const now = new Date();
+    const todayPrefix = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const monthPrefix = now.toISOString().slice(0, 7);  // YYYY-MM
+    const sevenDaysAgoMs = now.getTime() - (7 * 24 * 60 * 60 * 1000);
+
     let historicalCollected = 0;
-    let historicalPaidOut = 0;
+    let historicalPaidOut = 0; // Total committed cash winnings (paid + unredeemed)
+    let settledCashPaid = 0;   // Redeemed cash prizes
+    let outstandingCashLiabilities = 0; // Unredeemed winnings (Section 3: liability until collected)
+    let dailyCommittedCash = 0;
+    let weeklyCommittedCash = 0;
+    let monthlyCommittedCash = 0;
     let consecutiveNoWinners = 0;
     let streakCounting = true;
+    let totalSpinEntries = 0;
 
     for (const r of resolvedRounds) {
       if (excludeRoundId && r.id === excludeRoundId) continue;
 
       const roundBets = db.prepare(`
-        SELECT COALESCE(SUM(bet_amount), 0) as total
+        SELECT COALESCE(SUM(bet_amount), 0) as total, COUNT(*) as cnt
         FROM entries
         WHERE round_id = ? AND status = 'ACTIVE'
       `).get(r.id);
       historicalCollected += Number(roundBets?.total || 0);
+      totalSpinEntries += Number(roundBets?.cnt || 0);
 
       if (r.winning_entry_id) {
         streakCounting = false;
         const winRow = db.prepare('SELECT payout_amount FROM entries WHERE id = ?').get(r.winning_entry_id);
-        historicalPaidOut += Number(winRow?.payout_amount || 0);
+        const payout = Number(winRow?.payout_amount || 0);
+        historicalPaidOut += payout;
+
+        if (payout > 0) {
+          const redemptionRow = db.prepare('SELECT id FROM redemptions WHERE round_id = ?').get(r.id);
+          if (redemptionRow) {
+            settledCashPaid += payout;
+          } else {
+            outstandingCashLiabilities += payout;
+          }
+
+          const roundTimestamp = r.result_at || r.started_at || now.toISOString();
+          if (roundTimestamp.startsWith(todayPrefix)) {
+            dailyCommittedCash += payout;
+          }
+          if (roundTimestamp.startsWith(monthPrefix)) {
+            monthlyCommittedCash += payout;
+          }
+          const roundTimeMs = Date.parse(roundTimestamp);
+          if (!Number.isNaN(roundTimeMs) && roundTimeMs >= sevenDaysAgoMs) {
+            weeklyCommittedCash += payout;
+          }
+        }
       } else if (streakCounting) {
         consecutiveNoWinners += 1;
       }
     }
 
-    const targetProfitRatio = 0.25; // House retains at least 25% of gross wagers as protected profit
-    const netProfit = Math.round((historicalCollected - historicalPaidOut) * 100) / 100;
-    const protectedProfitFloor = Math.round((historicalCollected * targetProfitRatio) * 100) / 100;
+    // Customer & Repeat Participation Analytics (Section 8)
+    const playerRows = db.prepare(`
+      SELECT player_token, COUNT(DISTINCT round_id) as rounds_played
+      FROM entries
+      WHERE session_id = ? AND status = 'ACTIVE'
+      GROUP BY player_token
+    `).all(sessionId);
+    const uniquePlayers = playerRows.length;
+    const returningPlayers = playerRows.filter(p => Number(p.rounds_played) > 1).length;
+    const newPlayers = Math.max(0, uniquePlayers - returningPlayers);
+    const estimatedDailyCustomers = Number(finSettings.customersPerDay) || 50;
+    const nonPlayingVisitors = Math.max(0, estimatedDailyCustomers - uniquePlayers);
+
+    // Ring-Fenced Cash Reserve & Exposure Limits (Section 3)
+    const baseMonthlyReserve = Number(finSettings.monthlyCashReserve ?? finSettings.monthlyReserveLimit) || 1000;
+    const replenishedReserve = Number(finSettings.replenishedReserve) || 0;
+    const effectiveMonthlyReserveLimit = Math.round((baseMonthlyReserve + replenishedReserve) * 100) / 100;
+    const weeklyExposureLimit = Number(finSettings.weeklyExposureLimit) || 250;
+    const dailyExposureLimit = Number(finSettings.dailyExposureLimit) || 50;
+    const maxSingleCashPrize = Number(finSettings.maxSingleCashPrize) || 100;
+    const warningThreshold = Number(finSettings.warningThreshold) || 750;
+    const suspensionThreshold = Number(finSettings.suspensionThreshold) || effectiveMonthlyReserveLimit;
+
+    const monthlyReserveRemaining = Math.max(0, Math.round((effectiveMonthlyReserveLimit - monthlyCommittedCash) * 100) / 100);
+    const weeklyExposureRemaining = Math.max(0, Math.round((weeklyExposureLimit - weeklyCommittedCash) * 100) / 100);
+    const dailyExposureRemaining = Math.max(0, Math.round((dailyExposureLimit - dailyCommittedCash) * 100) / 100);
+
+    const isReserveWarning = monthlyCommittedCash >= warningThreshold;
+    const isReserveExhausted = monthlyCommittedCash >= suspensionThreshold || monthlyReserveRemaining < 10;
+    const emergencySuspended = Boolean(finSettings.emergencySuspended);
+    const isNewEntrySuspended = emergencySuspended || isReserveExhausted;
+
+    // Section 8 Net Spin Contribution Formula:
+    // Spin contribution = Spin revenue − cash prizes − non-cash prize costs − operator share − payment fees − other direct costs
+    const cleanCollected = Math.round(historicalCollected * 100) / 100;
+    const cleanCommitted = Math.round(historicalPaidOut * 100) / 100;
+    const operatorSharePct = Number(finSettings.operatorSharePct) || 0;
+    const paymentFeePct = Number(finSettings.paymentFeePct) || 0;
+    const nonCashPrizeCosts = Number(finSettings.nonCashPrizeCostMonthly ?? finSettings.nonCashPrizeCosts) || 0;
+    const otherDirectCosts = Number(finSettings.otherDirectCostsMonthly ?? finSettings.otherDirectCosts) || 0;
+    const operatorShareAmount = Math.round(cleanCollected * (operatorSharePct / 100) * 100) / 100;
+    const paymentFeesAmount = Math.round(cleanCollected * (paymentFeePct / 100) * 100) / 100;
+    const netSpinContribution = Math.round(
+      (cleanCollected - cleanCommitted - nonCashPrizeCosts - operatorShareAmount - paymentFeesAmount - otherDirectCosts) * 100
+    ) / 100;
+
+    // Legacy 25% Profit-Guard metrics for 1.5x/2x/3x Cash Multiplier compatibility
+    const targetProfitRatio = 0.25;
+    const netProfit = Math.round((cleanCollected - cleanCommitted) * 100) / 100;
+    const protectedProfitFloor = Math.round((cleanCollected * targetProfitRatio) * 100) / 100;
     const surplusReserve = Math.max(0, Math.round((netProfit - protectedProfitFloor) * 100) / 100);
-    const profitMarginPct = historicalCollected > 0
-      ? Math.round((netProfit / historicalCollected) * 100)
+    const profitMarginPct = cleanCollected > 0
+      ? Math.round((netProfit / cleanCollected) * 100)
       : 100;
 
     return {
-      historicalCollected: Math.round(historicalCollected * 100) / 100,
-      historicalPaidOut: Math.round(historicalPaidOut * 100) / 100,
+      historicalCollected: cleanCollected,
+      historicalPaidOut: cleanCommitted,
+      settledCashPaid: Math.round(settledCashPaid * 100) / 100,
+      outstandingCashLiabilities: Math.round(outstandingCashLiabilities * 100) / 100,
+      totalCommittedCash: cleanCommitted,
+      committedCashTotal: cleanCommitted,
+      dailyCommittedCash: Math.round(dailyCommittedCash * 100) / 100,
+      dailyCashCommitted: Math.round(dailyCommittedCash * 100) / 100,
+      weeklyCommittedCash: Math.round(weeklyCommittedCash * 100) / 100,
+      weeklyCashCommitted: Math.round(weeklyCommittedCash * 100) / 100,
+      monthlyCommittedCash: Math.round(monthlyCommittedCash * 100) / 100,
+      monthlyCashCommitted: Math.round(monthlyCommittedCash * 100) / 100,
+      monthlyReserveLimit: effectiveMonthlyReserveLimit,
+      monthlyCashReserve: effectiveMonthlyReserveLimit,
+      baseMonthlyReserve,
+      replenishedReserve,
+      weeklyExposureLimit,
+      dailyExposureLimit,
+      maxSingleCashPrize,
+      warningThreshold,
+      suspensionThreshold,
+      monthlyReserveRemaining,
+      availableCashReserve: monthlyReserveRemaining,
+      weeklyExposureRemaining,
+      dailyExposureRemaining,
+      isReserveWarning,
+      isReserveExhausted,
+      emergencySuspended,
+      isNewEntrySuspended,
       netProfit,
       protectedProfitFloor,
       surplusReserve,
       profitMarginPct,
       consecutiveNoWinners,
-      is3xReady: surplusReserve >= 15
+      is3xReady: surplusReserve >= 15 && monthlyReserveRemaining >= 30,
+      // Section 8 Essential Owner Dashboard figures
+      totalSpinEntries,
+      uniquePlayers,
+      uniquePlayersCount: uniquePlayers,
+      newPlayers,
+      returningPlayers,
+      repeatPlaysCount: returningPlayers,
+      nonPlayingVisitors,
+      avgOrdinarySpend: Number(finSettings.avgOrdinarySpend) || 20,
+      dailyOrdinarySalesRecorded: Number(finSettings.dailyOrdinarySalesRecorded) || (estimatedDailyCustomers * (Number(finSettings.avgOrdinarySpend) || 20)),
+      operatorSharePct,
+      operatorShareAmount,
+      paymentFeePct,
+      paymentFeesAmount,
+      nonCashPrizeCosts,
+      otherDirectCosts,
+      netSpinContribution,
+      formulaText: 'Spin contribution = Spin revenue − cash prizes − non-cash prize costs − operator share − payment fees − other direct costs',
+      financialSettings: finSettings,
+      profitabilityModel: calculateProfitabilityModel(finSettings),
+      weightedSchedule: WEIGHTED_CASH_SCHEDULE,
+      weightedCashSchedule: {
+        tiers: WEIGHTED_CASH_SCHEDULE.map((t) => ({
+          id: `tier_${t.prize}`,
+          label: `R${t.prize} Cash`,
+          amount: t.prize,
+          probabilityPct: t.probability * 100,
+          oddsLabel: t.oddsLabel,
+          weight: t.ticketsOutOf4000,
+          expectedCostPerSpin: t.expectedCost
+        }))
+      },
+      promotionalCalendar: HYBRID_PROMOTIONAL_CALENDAR
+    };
+  }
+
+  // Section 2 & 3 of Launch Plan: Weighted Cash-Prize Engine (R10 @ 4%, R20 @ 0.5%, R50 @ 0.1%, R100 @ 0.025%)
+  // Total Win Probability = 4.625% (185 / 4,000) | Expected Cash Payout = R0.575 per R10 spin
+  selectWeightedCashOutcome({ session, currentRound, entries, winnerMode }) {
+    const stats = this.getHouseCashStats(session.id, currentRound.id);
+    const allWheelNums = this.getWheelNumbers(session);
+    const claimedMap = new Map(entries.map(e => [normalizeWheelNumber(e.number), e]));
+    const unclaimedNums = allWheelNums.filter(n => !claimedMap.has(normalizeWheelNumber(n)));
+
+    // Maximum allowed single cash prize bounded by remaining monthly reserve and R100 individual cap
+    const maxCap = Math.min(stats.monthlyReserveRemaining, stats.maxSingleCashPrize || 100);
+
+    // Helper: map a ticket in [0, 4000) to its cash prize tier (or 0 if >= 185)
+    const resolveTierFromRoll = (roll, betAmount = 10) => {
+      if (roll >= 185 || maxCap < 10) return { amount: 0, tierLabel: null };
+      const scale = Math.max(0.5, Math.min(2, (Number(betAmount) || 10) / 10));
+      let rawPrize = 10;
+      let oddsLabel = '1 in 25';
+      if (roll === 0) {
+        rawPrize = 100;
+        oddsLabel = '1 in 4,000';
+      } else if (roll < 5) {
+        rawPrize = 50;
+        oddsLabel = '1 in 1,000';
+      } else if (roll < 25) {
+        rawPrize = 20;
+        oddsLabel = '1 in 200';
+      } else {
+        rawPrize = 10;
+        oddsLabel = '1 in 25';
+      }
+
+      const scaledPrize = Math.min(100, Math.round(rawPrize * scale));
+      // Clamp to available ring-fenced cash reserve
+      const affordableTiers = [100, 50, 20, 10].filter(t => t <= maxCap && t <= scaledPrize);
+      if (affordableTiers.length === 0) {
+        if (maxCap >= 5 && scaledPrize >= 5) {
+          return { amount: Math.min(scaledPrize, maxCap), tierLabel: `R${Math.min(scaledPrize, maxCap)} Cash (${oddsLabel})` };
+        }
+        return { amount: 0, tierLabel: null };
+      }
+      const finalAmount = affordableTiers[0];
+      return { amount: finalAmount, tierLabel: `R${finalAmount} Cash (${oddsLabel})` };
+    };
+
+    if (winnerMode === 'GUARANTEED' && entries.length > 0 && maxCap >= 5) {
+      const chosenEntry = entries[crypto.randomInt(0, entries.length)];
+      const winningRoll = crypto.randomInt(0, 185); // Roll exclusively within the 185 winning tickets
+      const tier = resolveTierFromRoll(winningRoll, chosenEntry.bet_amount);
+      const bet = Math.max(5, Number(chosenEntry.bet_amount) || 10);
+      const payout = tier.amount > 0 ? tier.amount : Math.min(10, maxCap);
+      return {
+        winningNumber: normalizeWheelNumber(chosenEntry.number),
+        winningEntry: chosenEntry,
+        appliedMultiplier: Math.round((payout / bet) * 100) / 100,
+        payoutAmount: payout,
+        prizeTierLabel: tier.tierLabel || `R${payout} Cash`
+      };
+    }
+
+    // Authentic Weighted Schedule (4.625% win probability per entry = 185 / 4,000)
+    // Shuffle entries so each entrant is evaluated fairly
+    const shuffledEntries = [...entries].sort(() => crypto.randomInt(0, 2) - 1);
+    for (const entry of shuffledEntries) {
+      const roll = crypto.randomInt(0, 4000);
+      if (roll < 185) {
+        const tier = resolveTierFromRoll(roll, entry.bet_amount);
+        if (tier.amount > 0) {
+          const bet = Math.max(5, Number(entry.bet_amount) || 10);
+          return {
+            winningNumber: normalizeWheelNumber(entry.number),
+            winningEntry: entry,
+            appliedMultiplier: Math.round((tier.amount / bet) * 100) / 100,
+            payoutAmount: tier.amount,
+            prizeTierLabel: tier.tierLabel
+          };
+        }
+      }
+    }
+
+    // 95.375% of spins: No cash prize won -> land on an unclaimed section on the 20-section TV wheel
+    const fallbackUnclaimed = unclaimedNums.length > 0
+      ? unclaimedNums[crypto.randomInt(0, unclaimedNums.length)]
+      : allWheelNums[crypto.randomInt(0, allWheelNums.length)];
+    return {
+      winningNumber: normalizeWheelNumber(fallbackUnclaimed),
+      winningEntry: null,
+      appliedMultiplier: 0,
+      payoutAmount: 0,
+      prizeTierLabel: null
     };
   }
 
@@ -407,7 +878,7 @@ export class GameEngine {
     `).get(sessionId);
 
     if (!currentRound) {
-      const firstStandardPrize = db.prepare("SELECT id FROM prizes WHERE enabled = 1 AND prize_type != 'cash_multiplier' LIMIT 1").get();
+      const firstStandardPrize = db.prepare("SELECT id FROM prizes WHERE enabled = 1 AND prize_type NOT IN ('cash_multiplier', 'weighted_cash') LIMIT 1").get();
       const fallbackPrize = firstStandardPrize || db.prepare('SELECT id FROM prizes WHERE enabled = 1 LIMIT 1').get();
       const prizeId = fallbackPrize ? fallbackPrize.id : null;
       const prizeObj = prizeId ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(prizeId) : null;
@@ -443,7 +914,7 @@ export class GameEngine {
 
     if (currentRound) {
       entries = db.prepare(`
-        SELECT id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status 
+        SELECT id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status 
         FROM entries 
         WHERE round_id = ? AND status = 'ACTIVE'
         ORDER BY number ASC
@@ -462,7 +933,8 @@ export class GameEngine {
     const wheelNumbers = this.getWheelNumbers(session);
     const claimedNumbers = entries.map(e => String(e.number));
     const totalBets = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
-    const isCashRound = prize?.prize_type === 'cash_multiplier';
+    const isWeightedCash = prize?.prize_type === 'weighted_cash';
+    const isCashRound = Boolean(prize?.prize_type === 'cash_multiplier' || isWeightedCash);
     const houseCashStats = this.getHouseCashStats(sessionId);
 
     const winningEntry = currentRound && currentRound.winning_entry_id
@@ -506,9 +978,13 @@ export class GameEngine {
         roundNumber: currentRound.round_number,
         status: currentRound.status,
         isCashRound,
+        isWeightedCash,
         minBet: 5,
-        multipliers: [1.5, 2, 3],
+        defaultSpinPrice: isWeightedCash ? 10 : 5,
+        multipliers: isWeightedCash ? [1, 2, 5, 10] : [1.5, 2, 3],
         appliedMultiplier: Number(currentRound.applied_multiplier) || 0,
+        prizeTierLabel: currentRound.prize_tier_label || null,
+        redemptionCode: currentRound.redemption_code || null,
         totalBets,
         winningNumber: currentRound.winning_number,
         winningEntryId: currentRound.winning_entry_id,
@@ -516,6 +992,7 @@ export class GameEngine {
         winnerNickname: winningEntry ? winningEntry.nickname : null,
         winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
         winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
+        winnerTxId: winningEntry ? (winningEntry.tx_id || null) : null,
         prize,
         startedAt: currentRound.started_at,
         resultAt: currentRound.result_at,
@@ -573,11 +1050,15 @@ export class GameEngine {
 
     const existing = this.findSessionByCode(cleanShopCode);
     if (existing) {
-      const settingsJson = JSON.stringify({
+      let existingSettings = {};
+      try { existingSettings = existing.settings_json ? JSON.parse(existing.settings_json) : {}; } catch {}
+      const mergedSettings = {
+        ...existingSettings,
         shopId: shop.id,
         shopName: shop.name,
         shopCode: cleanShopCode
-      });
+      };
+      const settingsJson = JSON.stringify(mergedSettings);
       if (existing.short_code !== cleanShopCode || existing.settings_json !== settingsJson) {
         db.prepare('UPDATE sessions SET short_code = ?, settings_json = ? WHERE id = ?').run(
           cleanShopCode,
@@ -617,7 +1098,7 @@ export class GameEngine {
     // Pick a default prize if none provided
     let prizeId = defaultPrizeId;
     if (!prizeId) {
-      const firstStandardPrize = db.prepare("SELECT id FROM prizes WHERE enabled = 1 AND prize_type != 'cash_multiplier' LIMIT 1").get();
+      const firstStandardPrize = db.prepare("SELECT id FROM prizes WHERE enabled = 1 AND prize_type NOT IN ('cash_multiplier', 'weighted_cash') LIMIT 1").get();
       const fallbackPrize = firstStandardPrize || db.prepare('SELECT id FROM prizes WHERE enabled = 1 LIMIT 1').get();
       prizeId = fallbackPrize ? fallbackPrize.id : null;
     }
@@ -627,9 +1108,12 @@ export class GameEngine {
     if (cleanShopCode) {
       const existingShopSession = db.prepare('SELECT * FROM sessions WHERE UPPER(short_code) = ?').get(cleanShopCode);
       if (existingShopSession) {
+        let existingSettings = {};
+        try { existingSettings = existingShopSession.settings_json ? JSON.parse(existingShopSession.settings_json) : {}; } catch {}
         const settingsJson = JSON.stringify({
-          shopId: shopId || null,
-          shopName: shopName || null,
+          ...existingSettings,
+          shopId: shopId || existingSettings.shopId || null,
+          shopName: shopName || existingSettings.shopName || null,
           shopCode: cleanShopCode
         });
         db.prepare(`
@@ -697,13 +1181,24 @@ export class GameEngine {
     const settingsJson = JSON.stringify({
       shopId: shopId || null,
       shopName: shopName || null,
-      shopCode: shortCode
+      shopCode: shortCode,
+      financialSettings: { ...DEFAULT_FINANCIAL_SETTINGS }
     });
 
     db.prepare(`
       INSERT INTO sessions (id, short_code, status, number_min, number_max, created_at, host_id, host_pin, tv_pairing_code, settings_json)
       VALUES (?, ?, 'REGISTRATION_OPEN', ?, ?, ?, ?, ?, ?, ?)
     `).run(sessionId, shortCode, numberMin, numberMax, createdAt, hostId, hostPin, pairingCode, settingsJson);
+
+    // Seed initial R1,000 ring-fenced cash reserve ledger entry
+    logReserveLedger({
+      sessionId,
+      entryType: 'RESERVE_INITIALIZED',
+      amount: DEFAULT_FINANCIAL_SETTINGS.monthlyCashReserve,
+      committedDelta: 0,
+      notes: 'Ring-fenced monthly cash-prize reserve initialized (R1,000)',
+      actorId: hostId
+    });
 
     // Create Round 1
     const roundId = 'rnd_' + crypto.randomBytes(6).toString('hex');
@@ -757,7 +1252,7 @@ export class GameEngine {
   }
 
   // Claim a number atomically for a round
-  claimNumber(sessionId, { number, playerToken, nickname, betAmount }) {
+  claimNumber(sessionId, { number, playerToken, nickname, betAmount, ageVerified = true }) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) {
       return { success: false, status: 404, error: 'Session not found.' };
@@ -773,6 +1268,23 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Registration is closed for this round.' };
     }
 
+    const stats = this.getHouseCashStats(sessionId);
+    if (stats.emergencySuspended) {
+      return {
+        success: false,
+        status: 403,
+        error: 'New entries are currently suspended by operator emergency control.'
+      };
+    }
+
+    if (ageVerified === false) {
+      return {
+        success: false,
+        status: 403,
+        error: 'Players must be 18+ and meet eligibility requirements to enter.'
+      };
+    }
+
     const cleanNum = normalizeWheelNumber(number);
     const validWheelNums = this.getWheelNumbers(session);
     if (!cleanNum || !validWheelNums.includes(cleanNum)) {
@@ -786,7 +1298,16 @@ export class GameEngine {
     const prize = currentRound.prize_id
       ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
       : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
-    const isCashRound = prize?.prize_type === 'cash_multiplier';
+    const isWeightedCash = prize?.prize_type === 'weighted_cash';
+    const isCashRound = Boolean(prize?.prize_type === 'cash_multiplier' || isWeightedCash);
+
+    if (isCashRound && stats.isReserveExhausted) {
+      return {
+        success: false,
+        status: 403,
+        error: 'New paid entries suspended: Monthly R1,000 cash-prize reserve threshold reached. Replenish reserve to continue.'
+      };
+    }
 
     let cleanBetAmount = 0;
     let cleanPayoutAmount = 0;
@@ -796,21 +1317,24 @@ export class GameEngine {
         return {
           success: false,
           status: 400,
-          error: 'Minimum bet is R5 for Cash Multiplier rounds.'
+          error: isWeightedCash
+            ? 'Minimum stake is R5 (recommended R10) for Cash Spin rounds.'
+            : 'Minimum bet is R5 for Cash Multiplier rounds.'
         };
       }
       cleanBetAmount = Math.round(parsedBet * 100) / 100;
-      // Base guaranteed minimum multiplier is 1.5x (final 1.5x / 2x / 3x multiplier is rolled on spin)
-      cleanPayoutAmount = Math.round(cleanBetAmount * 1.5 * 100) / 100;
+      cleanPayoutAmount = isWeightedCash
+        ? cleanBetAmount // Base 1x (R10) tier; can roll R10, R20, R50, or R100 on spin
+        : Math.round(cleanBetAmount * 1.5 * 100) / 100;
     }
 
     const cleanNickname = String(nickname || 'Player').trim().slice(0, 18).replace(/[<>]/g, '');
+    const txId = generateTransactionId(session.short_code);
 
     // Execute atomic claim in SQLite
     try {
-      // Check if player already claimed a number in this round
       const existingPlayerEntry = db.prepare(`
-        SELECT id, number, bet_amount FROM entries 
+        SELECT id, number, bet_amount, tx_id FROM entries 
         WHERE round_id = ? AND player_token = ? AND status = 'ACTIVE'
       `).get(currentRound.id, playerToken);
 
@@ -818,8 +1342,8 @@ export class GameEngine {
         if (String(existingPlayerEntry.number) === cleanNum) {
           if (isCashRound && existingPlayerEntry.bet_amount !== cleanBetAmount) {
             db.prepare(`
-              UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ? WHERE id = ?
-            `).run(cleanBetAmount, cleanPayoutAmount, cleanNickname, existingPlayerEntry.id);
+              UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ?, tx_id = ? WHERE id = ?
+            `).run(cleanBetAmount, cleanPayoutAmount, cleanNickname, txId, existingPlayerEntry.id);
             this.syncEntryToMongo(existingPlayerEntry.id);
             this.broadcastSessionState(sessionId);
             return {
@@ -828,16 +1352,17 @@ export class GameEngine {
               nickname: cleanNickname,
               betAmount: cleanBetAmount,
               payoutAmount: cleanPayoutAmount,
-              message: `Updated your bet on #${cleanNum} to R${cleanBetAmount} (Win R${cleanPayoutAmount})!`
+              txId,
+              message: `Updated your bet on #${cleanNum} to R${cleanBetAmount} (Tx: ${txId})!`
             };
           }
-          // Already owns this number
           return {
             success: true,
             number: cleanNum,
             nickname: cleanNickname,
             betAmount: cleanBetAmount,
             payoutAmount: cleanPayoutAmount,
+            txId: existingPlayerEntry.tx_id || txId,
             message: 'You already claimed this number.'
           };
         }
@@ -851,9 +1376,9 @@ export class GameEngine {
 
           newEntryId = 'ent_' + crypto.randomBytes(6).toString('hex');
           db.prepare(`
-            INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-          `).run(newEntryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+            INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+          `).run(newEntryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
 
           db.exec('COMMIT;');
         } catch (txErr) {
@@ -866,26 +1391,41 @@ export class GameEngine {
         // Fresh claim
         const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
         db.prepare(`
-          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-        `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+        `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
         this.syncEntryToMongo(entryId);
+
+        if (cleanBetAmount > 0) {
+          logReserveLedger({
+            sessionId,
+            roundId: currentRound.id,
+            entryId,
+            txId,
+            entryType: 'STAKE_RECEIVED',
+            amount: cleanBetAmount,
+            committedDelta: 0,
+            notes: `Player ${cleanNickname} staked R${cleanBetAmount} on #${cleanNum}`,
+            actorId: playerToken
+          });
+        }
       }
 
       logAudit(sessionId, 'PLAYER', playerToken, 'NUMBER_CLAIMED', {
         number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
-        payoutAmount: cleanPayoutAmount
+        payoutAmount: cleanPayoutAmount,
+        txId
       });
 
-      // Broadcast update
       this.io.to(sessionId).emit('entry:claimed', {
         number: cleanNum,
         nickname: cleanNickname,
         playerToken,
         betAmount: cleanBetAmount,
-        payoutAmount: cleanPayoutAmount
+        payoutAmount: cleanPayoutAmount,
+        txId
       });
       this.broadcastSessionState(sessionId);
 
@@ -894,7 +1434,8 @@ export class GameEngine {
         number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
-        payoutAmount: cleanPayoutAmount
+        payoutAmount: cleanPayoutAmount,
+        txId
       };
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE constraint failed')) {
@@ -905,7 +1446,7 @@ export class GameEngine {
   }
 
   // Host manually claims a number on behalf of a player without a phone
-  hostClaimNumber(sessionId, { number, nickname, betAmount }) {
+  hostClaimNumber(sessionId, { number, nickname, betAmount, ageVerified = true }) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) {
       return { success: false, status: 404, error: 'Session not found.' };
@@ -921,6 +1462,15 @@ export class GameEngine {
       return { success: false, status: 409, error: 'Registration is closed for this round.' };
     }
 
+    const stats = this.getHouseCashStats(sessionId);
+    if (stats.emergencySuspended) {
+      return {
+        success: false,
+        status: 403,
+        error: 'New entries are currently suspended by operator emergency control.'
+      };
+    }
+
     const cleanNum = normalizeWheelNumber(number);
     const validWheelNums = this.getWheelNumbers(session);
     if (!cleanNum || !validWheelNums.includes(cleanNum)) {
@@ -934,7 +1484,16 @@ export class GameEngine {
     const prize = currentRound.prize_id
       ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
       : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
-    const isCashRound = prize?.prize_type === 'cash_multiplier';
+    const isWeightedCash = prize?.prize_type === 'weighted_cash';
+    const isCashRound = Boolean(prize?.prize_type === 'cash_multiplier' || isWeightedCash);
+
+    if (isCashRound && stats.isReserveExhausted) {
+      return {
+        success: false,
+        status: 403,
+        error: 'New paid entries suspended: Monthly R1,000 cash-prize reserve threshold reached. Replenish reserve to continue.'
+      };
+    }
 
     let cleanBetAmount = 0;
     let cleanPayoutAmount = 0;
@@ -944,16 +1503,20 @@ export class GameEngine {
         return {
           success: false,
           status: 400,
-          error: 'Minimum bet is R5 for Cash Multiplier rounds.'
+          error: isWeightedCash
+            ? 'Minimum stake is R5 (recommended R10) for Cash Spin rounds.'
+            : 'Minimum bet is R5 for Cash Multiplier rounds.'
         };
       }
       cleanBetAmount = Math.round(parsedBet * 100) / 100;
-      // Base guaranteed minimum multiplier is 1.5x (final 1.5x / 2x / 3x multiplier is rolled on spin)
-      cleanPayoutAmount = Math.round(cleanBetAmount * 1.5 * 100) / 100;
+      cleanPayoutAmount = isWeightedCash
+        ? cleanBetAmount
+        : Math.round(cleanBetAmount * 1.5 * 100) / 100;
     }
 
     const rawNickname = String(nickname || '').trim().slice(0, 18).replace(/[<>]/g, '');
     const cleanNickname = rawNickname || `Player #${cleanNum}`;
+    const txId = generateTransactionId(session.short_code);
 
     try {
       const existingEntry = db.prepare(`
@@ -972,17 +1535,32 @@ export class GameEngine {
       const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
 
       db.prepare(`
-        INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-      `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, new Date().toISOString());
+        INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+      `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
       this.syncEntryToMongo(entryId);
+
+      if (cleanBetAmount > 0) {
+        logReserveLedger({
+          sessionId,
+          roundId: currentRound.id,
+          entryId,
+          txId,
+          entryType: 'STAKE_RECEIVED',
+          amount: cleanBetAmount,
+          committedDelta: 0,
+          notes: `Host recorded R${cleanBetAmount} stake for ${cleanNickname} on #${cleanNum}`,
+          actorId: 'host'
+        });
+      }
 
       logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_CLAIMED', {
         number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
-        playerToken
+        playerToken,
+        txId
       });
 
       this.io.to(sessionId).emit('entry:claimed', {
@@ -991,6 +1569,7 @@ export class GameEngine {
         playerToken,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
+        txId,
         isHostPick: true
       });
       this.broadcastSessionState(sessionId);
@@ -1002,6 +1581,7 @@ export class GameEngine {
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
         playerToken,
+        txId,
         isHostPick: true
       };
     } catch (err) {
@@ -1012,7 +1592,7 @@ export class GameEngine {
     }
   }
 
-  // Host releases/removes a claimed number while registration is open
+  // Host releases/removes a claimed number while registration is open (with traceable refund logging)
   hostUnclaimNumber(sessionId, number) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     if (!session) {
@@ -1038,19 +1618,38 @@ export class GameEngine {
       return { success: false, status: 404, error: `Number #${cleanNum} is not currently claimed.` };
     }
 
+    const refundedAmount = Number(existingEntry.bet_amount) || 0;
     db.prepare('DELETE FROM entries WHERE id = ?').run(existingEntry.id);
     deleteRecordFromMongo('entries', existingEntry.id);
 
+    if (refundedAmount > 0) {
+      logReserveLedger({
+        sessionId,
+        roundId: currentRound.id,
+        entryId: existingEntry.id,
+        txId: existingEntry.tx_id || null,
+        entryType: 'ENTRY_REFUND',
+        amount: -refundedAmount,
+        committedDelta: 0,
+        notes: `Authorised refund of R${refundedAmount} for ${existingEntry.nickname} (#${cleanNum})`,
+        actorId: 'host'
+      });
+    }
+
     logAudit(sessionId, 'HOST', 'host', 'HOST_NUMBER_UNCLAIMED', {
       number: cleanNum,
-      previousNickname: existingEntry.nickname
+      previousNickname: existingEntry.nickname,
+      refundedAmount,
+      txId: existingEntry.tx_id || null
     });
 
     this.broadcastSessionState(sessionId);
     return {
       success: true,
       number: cleanNum,
-      removedNickname: existingEntry.nickname
+      removedNickname: existingEntry.nickname,
+      refundedAmount,
+      txId: existingEntry.tx_id || null
     };
   }
 
@@ -1108,7 +1707,8 @@ export class GameEngine {
       return {
         success: true,
         message: 'Duplicate spin request ignored (idempotent)',
-        winningNumber: currentRound.winning_number
+        winningNumber: currentRound.winning_number,
+        redemptionCode: currentRound.redemption_code || null
       };
     }
 
@@ -1138,14 +1738,34 @@ export class GameEngine {
     const roundPrize = currentRound.prize_id
       ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
       : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
-    const isCashRound = roundPrize?.prize_type === 'cash_multiplier';
+    const isWeightedCash = roundPrize?.prize_type === 'weighted_cash';
+    const isCashMultiplier = roundPrize?.prize_type === 'cash_multiplier';
 
     let winningNumber;
     let winningEntry = null;
     let appliedMultiplier = 0;
+    let prizeTierLabel = null;
 
-    if (isCashRound) {
-      // Use profit-protected smart cash multiplier engine (1.5x, 2x, 3x)
+    if (isWeightedCash) {
+      // PDF Section 2: Weighted Cash-Prize Schedule (R10 @ 4%, R20 @ 0.5%, R50 @ 0.1%, R100 @ 0.025%)
+      const outcome = this.selectWeightedCashOutcome({
+        session,
+        currentRound,
+        entries,
+        winnerMode
+      });
+      winningNumber = normalizeWheelNumber(outcome.winningNumber);
+      winningEntry = outcome.winningEntry;
+      appliedMultiplier = outcome.appliedMultiplier;
+      prizeTierLabel = outcome.prizeTierLabel;
+
+      if (winningEntry && outcome.payoutAmount > 0) {
+        db.prepare('UPDATE entries SET payout_amount = ? WHERE id = ?').run(outcome.payoutAmount, winningEntry.id);
+        winningEntry.payout_amount = outcome.payoutAmount;
+        this.syncEntryToMongo(winningEntry.id);
+      }
+    } else if (isCashMultiplier) {
+      // Profit-protected smart cash multiplier engine (1.5x, 2x, 3x)
       const outcome = this.selectSmartCashOutcome({
         session,
         currentRound,
@@ -1161,43 +1781,76 @@ export class GameEngine {
         db.prepare('UPDATE entries SET payout_amount = ? WHERE id = ?').run(finalPayout, winningEntry.id);
         winningEntry.payout_amount = finalPayout;
         this.syncEntryToMongo(winningEntry.id);
+        prizeTierLabel = `R${finalPayout} Cash (${appliedMultiplier}x)`;
       }
     } else if (winnerMode === 'GUARANTEED' && entries.length > 0) {
       // Party / guaranteed promo mode: selects among claimed numbers
       const winningIndex = crypto.randomInt(0, entries.length);
       winningEntry = entries[winningIndex];
       winningNumber = normalizeWheelNumber(winningEntry.number);
+      prizeTierLabel = roundPrize?.name || null;
     } else {
       // Default: TRUE_ODDS (Hard arcade challenge: selection across ALL numbers in wheel range!)
-      // If the wheel lands on an unclaimed number, there is NO WINNER this round!
       const allWheelNums = this.getWheelNumbers(session);
       winningNumber = normalizeWheelNumber(allWheelNums[crypto.randomInt(0, allWheelNums.length)]);
       winningEntry = entries.find(e => normalizeWheelNumber(e.number) === normalizeWheelNumber(winningNumber)) || null;
+      if (winningEntry) {
+        prizeTierLabel = roundPrize?.name || null;
+      }
     }
 
+    const redemptionCode = winningEntry ? generateRedemptionCode(currentRound.round_number) : null;
     const spinDurationMs = 5000; // 5.0s fast high-energy arcade spin
     const now = new Date().toISOString();
 
-    // Persist result immediately before broadcasting (Page 8 data integrity rule)
+    // Persist result immediately before broadcasting (Reserve Rule: record every winning result immediately)
     db.prepare(`
       UPDATE rounds 
       SET status = 'SPINNING', 
           winning_number = ?, 
           winning_entry_id = ?, 
           applied_multiplier = ?,
+          redemption_code = ?,
+          prize_tier_label = ?,
           started_at = ?,
           idempotency_key = ?
       WHERE id = ?
-    `).run(winningNumber, winningEntry ? winningEntry.id : null, appliedMultiplier, now, idempotencyKey || 'spin_' + Date.now(), currentRound.id);
+    `).run(
+      winningNumber,
+      winningEntry ? winningEntry.id : null,
+      appliedMultiplier,
+      redemptionCode,
+      prizeTierLabel,
+      now,
+      idempotencyKey || 'spin_' + Date.now(),
+      currentRound.id
+    );
 
     db.prepare(`UPDATE sessions SET status = 'SPINNING' WHERE id = ?`).run(sessionId);
     this.syncRoundToMongo(currentRound.id);
     this.syncSessionToMongo(sessionId);
 
+    // Reserve Rule: Record winning cash liability immediately in the cash reserve ledger
+    if (winningEntry && Number(winningEntry.payout_amount) > 0) {
+      logReserveLedger({
+        sessionId,
+        roundId: currentRound.id,
+        entryId: winningEntry.id,
+        txId: winningEntry.tx_id || null,
+        entryType: 'PRIZE_COMMITTED',
+        amount: Number(winningEntry.payout_amount),
+        committedDelta: Number(winningEntry.payout_amount),
+        notes: `Winning result committed immediately: ${winningEntry.nickname} (#${winningNumber}) won R${winningEntry.payout_amount} [Code: ${redemptionCode}]`,
+        actorId: 'engine'
+      });
+    }
+
     logAudit(sessionId, 'HOST', 'host', 'SPIN_STARTED', {
       roundId: currentRound.id,
       winningNumber,
       appliedMultiplier,
+      prizeTierLabel,
+      redemptionCode,
       hasWinner: Boolean(winningEntry),
       winningPlayer: winningEntry ? winningEntry.nickname : null,
       idempotencyKey
@@ -1208,6 +1861,8 @@ export class GameEngine {
       roundId: currentRound.id,
       winningNumber,
       appliedMultiplier,
+      prizeTierLabel,
+      redemptionCode,
       spinDurationMs,
       hasWinner: Boolean(winningEntry),
       eligibleNumbers: entries.map(e => e.number)
@@ -1248,13 +1903,15 @@ export class GameEngine {
             totalCollected: roundTotalCollected,
             payoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
             appliedMultiplier,
-            prizeName: roundPrize?.name || 'Spin & Win'
+            prizeName: prizeTierLabel || roundPrize?.name || 'Spin & Win'
           });
         }
 
         logAudit(sessionId, 'SERVER', 'engine', 'SPIN_RESULT', {
           winningNumber,
           appliedMultiplier,
+          prizeTierLabel,
+          redemptionCode,
           hasWinner: Boolean(winningEntry),
           winningPlayer: winningEntry ? winningEntry.nickname : null,
           winningToken: winningEntry ? winningEntry.player_token : null
@@ -1264,6 +1921,8 @@ export class GameEngine {
           roundId: currentRound.id,
           winningNumber,
           appliedMultiplier,
+          prizeTierLabel,
+          redemptionCode,
           hasWinner: Boolean(winningEntry),
           winnerNickname: winningEntry ? winningEntry.nickname : null,
           winnerToken: winningEntry ? winningEntry.player_token : null,
@@ -1279,6 +1938,8 @@ export class GameEngine {
       success: true,
       winningNumber,
       appliedMultiplier,
+      prizeTierLabel,
+      redemptionCode,
       spinDurationMs,
       hasWinner: Boolean(winningEntry),
       winningNickname: winningEntry ? winningEntry.nickname : null,
@@ -1287,13 +1948,26 @@ export class GameEngine {
     };
   }
 
-  // Update active round prize (e.g. toggling between Standard Prize and 3x Cash Multiplier)
+  // Update active round prize (enforces Reserve Rule: never change prize/odds after customers have paid)
   setRoundPrize(sessionId, prizeId) {
     const currentRound = this.ensureCurrentRound(sessionId);
     if (!currentRound) return { success: false, status: 404, error: 'Active round not found.' };
 
     if (currentRound.status !== 'REGISTRATION_OPEN') {
       return { success: false, status: 409, error: 'Can only change prize while registration is open.' };
+    }
+
+    const paidEntriesRow = db.prepare(`
+      SELECT COUNT(*) as paidCount FROM entries
+      WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount > 0
+    `).get(currentRound.id);
+
+    if ((paidEntriesRow?.paidCount || 0) > 0) {
+      return {
+        success: false,
+        status: 409,
+        error: 'Reserve Rule: Cannot change the prize or odds after customers have already paid in this round.'
+      };
     }
 
     const prizeObj = db.prepare('SELECT * FROM prizes WHERE id = ?').get(prizeId);
@@ -1305,10 +1979,19 @@ export class GameEngine {
       UPDATE rounds SET prize_id = ?, prize_snapshot_json = ? WHERE id = ?
     `).run(prizeObj.id, JSON.stringify(prizeObj), currentRound.id);
 
-    // If switched to cash_multiplier and any existing entries have bet_amount < 5, set minimum R5 bet (1.5x baseline R7.50)
+    // If switched to cash_multiplier or weighted_cash and any existing free entries exist, set baseline bet
     if (prizeObj.prize_type === 'cash_multiplier') {
       db.prepare(`
         UPDATE entries SET bet_amount = 5, payout_amount = 7.5
+        WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount < 5
+      `).run(currentRound.id);
+      const updatedEntries = db.prepare('SELECT * FROM entries WHERE round_id = ?').all(currentRound.id);
+      for (const entry of updatedEntries) {
+        syncRecordToMongo('entries', entry);
+      }
+    } else if (prizeObj.prize_type === 'weighted_cash') {
+      db.prepare(`
+        UPDATE entries SET bet_amount = 10, payout_amount = 10
         WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount < 5
       `).run(currentRound.id);
       const updatedEntries = db.prepare('SELECT * FROM entries WHERE round_id = ?').all(currentRound.id);
@@ -1398,10 +2081,31 @@ export class GameEngine {
     return { success: true, roundNumber: nextRoundNumber, roundId };
   }
 
-  // Cancel a round
+  // Cancel a round (with logged, authorised, and traceable refunds for paid entries)
   cancelRound(sessionId, roundId, reason = 'Host cancelled') {
     const round = db.prepare('SELECT * FROM rounds WHERE id = ? AND session_id = ?').get(roundId, sessionId);
     if (!round) return { success: false, error: 'Round not found.' };
+
+    const activePaidEntries = db.prepare(`
+      SELECT * FROM entries WHERE round_id = ? AND status = 'ACTIVE' AND bet_amount > 0
+    `).all(roundId);
+
+    let totalRefunded = 0;
+    for (const entry of activePaidEntries) {
+      const amt = Number(entry.bet_amount) || 0;
+      totalRefunded += amt;
+      logReserveLedger({
+        sessionId,
+        roundId,
+        entryId: entry.id,
+        txId: entry.tx_id || null,
+        entryType: 'ROUND_CANCEL_REFUND',
+        amount: -amt,
+        committedDelta: 0,
+        notes: `Round #${round.round_number} cancelled (${reason}): refunded R${amt} to ${entry.nickname}`,
+        actorId: 'host'
+      });
+    }
 
     const now = new Date().toISOString();
     db.prepare(`
@@ -1412,13 +2116,13 @@ export class GameEngine {
     this.syncRoundToMongo(roundId);
     this.syncSessionToMongo(sessionId);
 
-    logAudit(sessionId, 'HOST', 'host', 'ROUND_CANCELLED', { roundId, reason });
+    logAudit(sessionId, 'HOST', 'host', 'ROUND_CANCELLED', { roundId, reason, totalRefunded, refundedEntriesCount: activePaidEntries.length });
 
     this.broadcastSessionState(sessionId);
-    return { success: true };
+    return { success: true, totalRefunded, refundedEntriesCount: activePaidEntries.length };
   }
 
-  // Mark prize redeemed
+  // Mark prize redeemed (settles committed cash liability in ledger)
   redeemPrize(roundId, { notes = '', redeemedBy = 'Staff Host' }) {
     const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
     if (!round) return { success: false, error: 'Round not found.' };
@@ -1433,6 +2137,7 @@ export class GameEngine {
       return { success: false, status: 409, error: `Prize was already marked redeemed on ${existing.redeemed_at}.` };
     }
 
+    const winningEntry = db.prepare('SELECT * FROM entries WHERE id = ?').get(round.winning_entry_id);
     const redemptionId = 'red_' + crypto.randomBytes(6).toString('hex');
     const now = new Date().toISOString();
 
@@ -1444,17 +2149,185 @@ export class GameEngine {
     const redemptionRow = db.prepare('SELECT * FROM redemptions WHERE id = ?').get(redemptionId);
     if (redemptionRow) syncRecordToMongo('redemptions', redemptionRow);
 
-    logAudit(round.session_id, 'HOST', redeemedBy, 'PRIZE_REDEEMED', { roundId, notes });
+    if (winningEntry && Number(winningEntry.payout_amount) > 0) {
+      logReserveLedger({
+        sessionId: round.session_id,
+        roundId,
+        entryId: winningEntry.id,
+        txId: winningEntry.tx_id || null,
+        entryType: 'PRIZE_SETTLED',
+        amount: Number(winningEntry.payout_amount),
+        committedDelta: 0, // Already committed at spin result time
+        notes: `Winner ${winningEntry.nickname} redeemed R${winningEntry.payout_amount} [Code: ${round.redemption_code || 'N/A'}] (${notes || 'Verified by host'})`,
+        actorId: redeemedBy
+      });
+    }
+
+    logAudit(round.session_id, 'HOST', redeemedBy, 'PRIZE_REDEEMED', {
+      roundId,
+      redemptionCode: round.redemption_code || null,
+      payoutAmount: winningEntry ? Number(winningEntry.payout_amount) || 0 : 0,
+      notes
+    });
 
     this.io.to(round.session_id).emit('prize:redeemed', {
       roundId,
+      redemptionCode: round.redemption_code || null,
       redeemedAt: now,
       redeemedBy,
       notes
     });
 
     this.broadcastSessionState(round.session_id);
-    return { success: true, redemptionId, redeemedAt: now };
+    return {
+      success: true,
+      redemptionId,
+      redemptionCode: round.redemption_code || null,
+      redeemedAt: now
+    };
+  }
+
+  // Replenish the ring-fenced cash-prize reserve (Reserve Rule: only reopen after reserve replenished)
+  replenishCashReserve(sessionId, { amount = 500, notes = 'Owner reserve top-up', actorId = 'host' } = {}) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return { success: false, status: 404, error: 'Session not found.' };
+
+    const cleanAmount = Math.round((Number(amount) || 0) * 100) / 100;
+    if (cleanAmount <= 0) {
+      return { success: false, status: 400, error: 'Replenishment amount must be greater than R0.' };
+    }
+
+    let settings = {};
+    try { settings = session.settings_json ? JSON.parse(session.settings_json) : {}; } catch {}
+    const fin = { ...DEFAULT_FINANCIAL_SETTINGS, ...(settings.financial || {}), ...(settings.financialSettings || {}) };
+    const currentBase = Number(fin.monthlyCashReserve ?? fin.monthlyReserveLimit) || 1000;
+    fin.monthlyCashReserve = Math.round((currentBase + cleanAmount) * 100) / 100;
+    fin.monthlyReserveLimit = fin.monthlyCashReserve;
+    fin.suspensionThreshold = fin.monthlyCashReserve;
+    fin.warningThreshold = Math.round(fin.monthlyCashReserve * 0.75 * 100) / 100;
+    settings.financialSettings = fin;
+    settings.financial = fin;
+
+    db.prepare('UPDATE sessions SET settings_json = ? WHERE id = ?').run(JSON.stringify(settings), sessionId);
+    this.syncSessionToMongo(sessionId);
+
+    logReserveLedger({
+      sessionId,
+      entryType: 'RESERVE_REPLENISHED',
+      amount: cleanAmount,
+      committedDelta: 0,
+      notes: `${notes} (+R${cleanAmount} added; new reserve ceiling R${fin.monthlyCashReserve})`,
+      actorId
+    });
+
+    logAudit(sessionId, 'HOST', actorId, 'CASH_RESERVE_REPLENISHED', {
+      addedAmount: cleanAmount,
+      newMonthlyCashReserve: fin.monthlyCashReserve,
+      notes
+    });
+
+    const snapshot = this.broadcastSessionState(sessionId);
+    return {
+      success: true,
+      addedAmount: cleanAmount,
+      newMonthlyCashReserve: fin.monthlyCashReserve,
+      houseCashStats: snapshot?.houseCashStats
+    };
+  }
+
+  // Emergency control: suspend or resume new entries without deleting existing obligations
+  setEmergencySuspend(sessionId, { suspended = true, reason = 'Operator emergency control', actorId = 'host' } = {}) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return { success: false, status: 404, error: 'Session not found.' };
+
+    let settings = {};
+    try { settings = session.settings_json ? JSON.parse(session.settings_json) : {}; } catch {}
+    const fin = { ...DEFAULT_FINANCIAL_SETTINGS, ...(settings.financialSettings || {}) };
+    fin.emergencySuspended = Boolean(suspended);
+    settings.financialSettings = fin;
+
+    db.prepare('UPDATE sessions SET settings_json = ? WHERE id = ?').run(JSON.stringify(settings), sessionId);
+    this.syncSessionToMongo(sessionId);
+
+    logReserveLedger({
+      sessionId,
+      entryType: fin.emergencySuspended ? 'EMERGENCY_SUSPEND' : 'EMERGENCY_RESUME',
+      amount: 0,
+      committedDelta: 0,
+      notes: `${fin.emergencySuspended ? 'Suspended' : 'Resumed'} new entries: ${reason}`,
+      actorId
+    });
+
+    logAudit(sessionId, 'HOST', actorId, fin.emergencySuspended ? 'EMERGENCY_SUSPENDED' : 'EMERGENCY_RESUMED', {
+      suspended: fin.emergencySuspended,
+      reason
+    });
+
+    const snapshot = this.broadcastSessionState(sessionId);
+    return {
+      success: true,
+      emergencySuspended: fin.emergencySuspended,
+      houseCashStats: snapshot?.houseCashStats
+    };
+  }
+
+  // Update commercial & profitability model parameters (Page 6 configurator & daily owner controls)
+  updateFinancialSettings(sessionId, newSettings = {}) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return { success: false, status: 404, error: 'Session not found.' };
+
+    let settings = {};
+    try { settings = session.settings_json ? JSON.parse(session.settings_json) : {}; } catch {}
+    const currentFin = { ...DEFAULT_FINANCIAL_SETTINGS, ...(settings.financialSettings || {}) };
+
+    const updatedFin = {
+      ...currentFin,
+      ...(newSettings.dailyCustomers !== undefined ? { dailyCustomers: Math.max(1, Number(newSettings.dailyCustomers) || 50) } : {}),
+      ...(newSettings.avgOrdinarySpend !== undefined ? { avgOrdinarySpend: Math.max(0, Number(newSettings.avgOrdinarySpend) || 20) } : {}),
+      ...(newSettings.tradingDaysPerMonth !== undefined ? { tradingDaysPerMonth: Math.max(1, Number(newSettings.tradingDaysPerMonth) || 26) } : {}),
+      ...(newSettings.ordinaryGrossMarginPct !== undefined ? { ordinaryGrossMarginPct: Math.min(100, Math.max(0, Number(newSettings.ordinaryGrossMarginPct) || 65)) } : {}),
+      ...(newSettings.monthlyRent !== undefined ? { monthlyRent: Math.max(0, Number(newSettings.monthlyRent) || 14000) } : {}),
+      ...(newSettings.monthlyElectricityLow !== undefined ? { monthlyElectricityLow: Math.max(0, Number(newSettings.monthlyElectricityLow) || 6500) } : {}),
+      ...(newSettings.monthlyElectricityHigh !== undefined ? { monthlyElectricityHigh: Math.max(0, Number(newSettings.monthlyElectricityHigh) || 10000) } : {}),
+      ...(newSettings.proposedSpinPrice !== undefined ? { proposedSpinPrice: [5, 10, 20].includes(Number(newSettings.proposedSpinPrice)) ? Number(newSettings.proposedSpinPrice) : 10 } : {}),
+      ...(newSettings.targetUptakeRatePct !== undefined ? { targetUptakeRatePct: Math.min(100, Math.max(5, Number(newSettings.targetUptakeRatePct) || 50)) } : {}),
+      ...(newSettings.operatingRoute !== undefined ? { operatingRoute: ['PARTNER', 'OWN_LICENCE', 'COMPARE'].includes(newSettings.operatingRoute) ? newSettings.operatingRoute : 'PARTNER' } : {}),
+      ...(newSettings.operatorSharePct !== undefined ? { operatorSharePct: Math.min(80, Math.max(0, Number(newSettings.operatorSharePct) || 0)) } : {}),
+      ...(newSettings.paymentFeePct !== undefined ? { paymentFeePct: Math.min(20, Math.max(0, Number(newSettings.paymentFeePct) || 0)) } : {}),
+      ...(newSettings.nonCashPrizeCostMonthly !== undefined ? { nonCashPrizeCostMonthly: Math.max(0, Number(newSettings.nonCashPrizeCostMonthly) || 0) } : {}),
+      ...(newSettings.otherDirectCostsMonthly !== undefined ? { otherDirectCostsMonthly: Math.max(0, Number(newSettings.otherDirectCostsMonthly) || 0) } : {}),
+      ...(newSettings.monthlyCashReserve !== undefined ? { monthlyCashReserve: Math.max(100, Number(newSettings.monthlyCashReserve) || 1000) } : {}),
+      ...(newSettings.weeklyExposureLimit !== undefined ? { weeklyExposureLimit: Math.max(50, Number(newSettings.weeklyExposureLimit) || 250) } : {}),
+      ...(newSettings.dailyExposureLimit !== undefined ? { dailyExposureLimit: Math.max(10, Number(newSettings.dailyExposureLimit) || 50) } : {})
+    };
+
+    settings.financialSettings = updatedFin;
+    db.prepare('UPDATE sessions SET settings_json = ? WHERE id = ?').run(JSON.stringify(settings), sessionId);
+    this.syncSessionToMongo(sessionId);
+
+    logAudit(sessionId, 'HOST', 'host', 'FINANCIAL_SETTINGS_UPDATED', updatedFin);
+
+    const snapshot = this.broadcastSessionState(sessionId);
+    return {
+      success: true,
+      financialSettings: updatedFin,
+      houseCashStats: snapshot?.houseCashStats
+    };
+  }
+
+  // Retrieve ring-fenced cash reserve ledger entries
+  getCashReserveLedger(sessionId) {
+    const ledger = db.prepare(`
+      SELECT * FROM cash_reserve_ledger
+      WHERE session_id = ?
+      ORDER BY created_at DESC
+      LIMIT 100
+    `).all(sessionId);
+    return {
+      success: true,
+      ledger,
+      houseCashStats: this.getHouseCashStats(sessionId)
+    };
   }
 
   // Get session history
@@ -1463,6 +2336,7 @@ export class GameEngine {
       SELECT r.*, 
              e.number as winner_number, e.nickname as winner_nickname,
              e.bet_amount as winner_bet_amount, e.payout_amount as winner_payout_amount,
+             e.tx_id as winner_tx_id,
              p.name as prize_name, p.value as prize_value, p.prize_type as prize_type,
              red.redeemed_at, red.redeemed_by
       FROM rounds r
@@ -1477,6 +2351,10 @@ export class GameEngine {
       SELECT * FROM audit_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 50
     `).all(sessionId);
 
-    return { rounds, audits };
+    const reserveLedger = db.prepare(`
+      SELECT * FROM cash_reserve_ledger WHERE session_id = ? ORDER BY created_at DESC LIMIT 50
+    `).all(sessionId);
+
+    return { rounds, audits, reserveLedger };
   }
 }

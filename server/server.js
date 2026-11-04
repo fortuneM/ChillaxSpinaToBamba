@@ -320,11 +320,11 @@ app.post('/api/sessions/:id/pair-tv', (req, res) => {
 
 // POST /api/sessions/:id/entries: Claim a number for the current round (Player)
 app.post('/api/sessions/:id/entries', (req, res) => {
-  const { number, playerToken, nickname, betAmount } = req.body;
+  const { number, playerToken, nickname, betAmount, ageVerified } = req.body;
   if (!playerToken) {
     return res.status(400).json({ error: 'Player token is required.' });
   }
-  const result = engine.claimNumber(req.params.id, { number, playerToken, nickname, betAmount });
+  const result = engine.claimNumber(req.params.id, { number, playerToken, nickname, betAmount, ageVerified });
   if (!result.success) {
     return res.status(result.status || 400).json(result);
   }
@@ -333,8 +333,8 @@ app.post('/api/sessions/:id/entries', (req, res) => {
 
 // POST /api/sessions/:id/host-entries: Host claims a number for a player without a phone (Host)
 app.post('/api/sessions/:id/host-entries', requireHostAuth, (req, res) => {
-  const { number, nickname, betAmount } = req.body;
-  const result = engine.hostClaimNumber(req.params.id, { number, nickname, betAmount });
+  const { number, nickname, betAmount, ageVerified } = req.body;
+  const result = engine.hostClaimNumber(req.params.id, { number, nickname, betAmount, ageVerified });
   if (!result.success) {
     return res.status(result.status || 400).json(result);
   }
@@ -439,6 +439,43 @@ app.post('/api/rounds/:id/redeem', requireHostAuth, (req, res) => {
 app.get('/api/sessions/:id/history', requireHostAuth, (req, res) => {
   const history = engine.getSessionHistory(req.params.id);
   res.json(history);
+});
+
+// POST /api/sessions/:id/financial-settings: Update profitability model & commercial settings (Host)
+app.post('/api/sessions/:id/financial-settings', requireHostAuth, (req, res) => {
+  const result = engine.updateFinancialSettings(req.params.id, req.body);
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// POST /api/sessions/:id/reserve/replenish: Replenish ring-fenced cash-prize reserve (Host)
+app.post('/api/sessions/:id/reserve/replenish', requireHostAuth, (req, res) => {
+  const { amount, notes } = req.body;
+  const actorId = req.headers['x-host-user-id'] || 'host';
+  const result = engine.replenishCashReserve(req.params.id, { amount, notes, actorId });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// POST /api/sessions/:id/emergency-suspend: Emergency suspend/resume new paid entries (Host)
+app.post('/api/sessions/:id/emergency-suspend', requireHostAuth, (req, res) => {
+  const { suspended, reason } = req.body;
+  const actorId = req.headers['x-host-user-id'] || 'host';
+  const result = engine.setEmergencySuspend(req.params.id, { suspended, reason, actorId });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// GET /api/sessions/:id/reserve-ledger: Retrieve ring-fenced cash reserve ledger (Host)
+app.get('/api/sessions/:id/reserve-ledger', requireHostAuth, (req, res) => {
+  const result = engine.getCashReserveLedger(req.params.id);
+  res.json(result);
 });
 
 // -------------------------------------------------------------

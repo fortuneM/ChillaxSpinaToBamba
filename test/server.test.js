@@ -400,7 +400,105 @@ async function runTests() {
 
   console.log('  ✅ Wheel numbers selection & 2 zeros (0 & 00) passed');
 
-  console.log('\n🎉 ALL 14 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 15. Weighted Cash-Prize Schedule (4.625% / R0.575 EV), R1,000 Ring-Fenced Reserve, Odds-Lock & Profitability Model
+  console.log('Test 15: Weighted Cash-Prize Schedule, R1,000 Ring-Fenced Reserve & Profitability Model');
+  const finSession = await engine.createSession({
+    numberMin: 1,
+    numberMax: 20,
+    hostPin: '1234',
+    defaultPrizeId: 'prize_weighted_cash',
+    shopCode: 'CHX-9901',
+    shopId: 'shop_9901',
+    shopName: 'Chillax Flagship'
+  });
+
+  const finSnap = finSession.snapshot;
+  assert.strictEqual(finSnap.currentRound.isWeightedCash, true, 'Round must recognize weighted_cash prize mode');
+  assert.strictEqual(finSnap.currentRound.defaultSpinPrice, 10, 'Weighted cash round default spin price must be R10');
+
+  // Verify PDF Section 1, 2, 4, 5, 10 Profitability Model calculations
+  const pModel = finSnap.houseCashStats.profitabilityModel;
+  assert.strictEqual(pModel.monthlyCustomerVisits, 1300, '50 customers/day * 26 days = 1,300 visits/month');
+  assert.strictEqual(pModel.monthlyOrdinarySales, 26000, '1,300 visits * R20 = R26,000 ordinary sales');
+  assert.strictEqual(pModel.ordinaryGrossContribution, 16900, '65% of R26,000 = R16,900 ordinary contribution');
+  assert.strictEqual(pModel.expectedPayoutPerSpin, 0.575, 'Expected cash payout per R10 spin must be R0.575');
+  const sc50 = pModel.scenarios.find((s) => s.uptakePct === 50);
+  assert.strictEqual(sc50.monthlySpins, 650, '50% uptake = 650 spins/month');
+  assert.strictEqual(sc50.grossSpinRevenue, 6500, '650 spins * R10 = R6,500 gross revenue');
+  assert.strictEqual(sc50.expectedCashPayout, 373.75, '650 spins * R0.575 = R373.75 expected cash payout');
+  assert.strictEqual(sc50.netSpinContribution, 6126.25, 'Net contribution at 50% uptake (0% share) = R6,126.25');
+  assert.strictEqual(sc50.reserveRemaining, 626.25, 'R1,000 reserve - R373.75 = R626.25 remaining');
+
+  // Verify 18+ age check enforcement
+  const underageClaim = engine.claimNumber(finSession.sessionId, {
+    number: '1',
+    playerToken: 'tok_underage',
+    nickname: 'Kid',
+    betAmount: 10,
+    ageVerified: false
+  });
+  assert.strictEqual(underageClaim.success, false, 'Underage entry must be rejected');
+  assert.strictEqual(underageClaim.status, 403);
+
+  // Claim a paid R10 entry and verify unique transaction ID (txId)
+  const paidClaim = engine.claimNumber(finSession.sessionId, {
+    number: '5',
+    playerToken: 'tok_weighted_p1',
+    nickname: 'Sipho',
+    betAmount: 10,
+    ageVerified: true
+  });
+  assert.strictEqual(paidClaim.success, true);
+  assert(paidClaim.txId && paidClaim.txId.startsWith('TX-'), 'Paid entry must generate a unique transaction ID');
+
+  // Verify Reserve Rule: Cannot change prize/odds after customers have paid in a round
+  const lockCheck = engine.setRoundPrize(finSession.sessionId, 'prize_1');
+  assert.strictEqual(lockCheck.success, false, 'Must block changing prize/odds after paid entry');
+  assert.strictEqual(lockCheck.status, 409);
+
+  // VerifyGuaranteed win in Weighted Cash mode produces a valid tier (R10/R20/R50/R100), redemptionCode, and unredeemed liability
+  engine.setWinnerMode(finSession.sessionId, 'GUARANTEED');
+  engine.closeRegistration(finSession.sessionId);
+  const wSpin = engine.spin(finSession.sessionId, { idempotencyKey: 'wspin_1' });
+  assert.strictEqual(wSpin.success, true);
+  assert.strictEqual(wSpin.hasWinner, true);
+  assert(wSpin.redemptionCode && wSpin.redemptionCode.startsWith('CLX-R1-'), 'Winner must receive a unique redemption code');
+  assert([10, 20, 50, 100].includes(wSpin.winnerPayoutAmount), `Weighted cash payout must be R10, R20, R50, or R100 (got R${wSpin.winnerPayoutAmount})`);
+
+  // Verify unredeemed winning is counted as committed liability immediately (never counted as available cash)
+  const statsBeforeRedeem = engine.getHouseCashStats(finSession.sessionId);
+  assert.strictEqual(statsBeforeRedeem.outstandingCashLiabilities, wSpin.winnerPayoutAmount, 'Unredeemed prize must be tracked as outstanding liability');
+  assert.strictEqual(statsBeforeRedeem.committedCashTotal, wSpin.winnerPayoutAmount, 'Committed cash must include unredeemed liability');
+  assert.strictEqual(statsBeforeRedeem.availableCashReserve, 1000 - wSpin.winnerPayoutAmount, 'Available reserve must deduct unredeemed liability');
+
+  // Redeem prize and verify liability transitions from outstanding to settled paid
+  const roundAfterWSpin = engine.getSessionSnapshot(finSession.sessionId).currentRound;
+  const wRedeem = engine.redeemPrize(roundAfterWSpin.id, { notes: 'Verified code ' + wSpin.redemptionCode, redeemedBy: 'Manager' });
+  assert.strictEqual(wRedeem.success, true);
+  const statsAfterRedeem = engine.getHouseCashStats(finSession.sessionId);
+  assert.strictEqual(statsAfterRedeem.outstandingCashLiabilities, 0, 'Outstanding liability must be 0 after redemption');
+  assert.strictEqual(statsAfterRedeem.settledCashPaid, wSpin.winnerPayoutAmount, 'Settled cash paid must equal redeemed amount');
+
+  // Verify Reserve Replenishment & Emergency Suspension controls
+  const repRes = engine.replenishCashReserve(finSession.sessionId, { amount: 500, notes: 'Top up' });
+  assert.strictEqual(repRes.success, true);
+  assert.strictEqual(repRes.newMonthlyCashReserve, 1500, 'Reserve ceiling must increase from R1,000 to R1,500');
+
+  engine.createNextRound(finSession.sessionId, { prizeId: 'prize_weighted_cash' });
+  engine.setEmergencySuspend(finSession.sessionId, { suspended: true, reason: 'Audit check' });
+  const blockedClaim = engine.claimNumber(finSession.sessionId, {
+    number: '8',
+    playerToken: 'tok_blocked',
+    nickname: 'Bongani',
+    betAmount: 10
+  });
+  assert.strictEqual(blockedClaim.success, false, 'Emergency suspend must block new entries');
+  assert.strictEqual(blockedClaim.status, 403);
+  engine.setEmergencySuspend(finSession.sessionId, { suspended: false, reason: 'Audit done' });
+
+  console.log('  ✅ Weighted Cash-Prize Schedule, R1,000 Ring-Fenced Reserve & Profitability Model passed');
+
+  console.log('\n🎉 ALL 15 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

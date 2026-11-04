@@ -225,7 +225,8 @@ export function TvView() {
   const status = session.status;
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
-  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier');
+  const isWeightedCash = Boolean(currentRound?.isWeightedCash || prize?.prize_type === 'weighted_cash');
+  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier' || isWeightedCash);
   const isResultState = status === 'RESULT' && currentRound?.winningNumber;
   const hasWinner = Boolean(currentRound?.hasWinner || currentRound?.winningEntryId);
 
@@ -310,13 +311,21 @@ export function TvView() {
           {prize && (
             <div className="tv-prize-spotlight" style={{ borderColor: prize.color || '#00f2fe' }}>
               <div className="prize-spotlight-label">
-                {isCashRound ? '💰 MYSTERY CASH MULTIPLIER (1.5X • 2X • 3X)' : 'ROUND PRIZE'}
+                {isWeightedCash
+                  ? '🎯 R10 SPIN CASH SCHEDULE (R10 • R20 • R50 • R100)'
+                  : isCashRound
+                    ? '💰 MYSTERY CASH MULTIPLIER (1.5X • 2X • 3X)'
+                    : 'ROUND PRIZE'}
               </div>
               <div className="prize-spotlight-name" style={{ color: prize.color || '#00f2fe' }}>
                 {prize.name}
               </div>
               <div className="prize-spotlight-desc">
-                {isCashRound ? 'Bet from R5 • Spin rolls 1.5x, 2x, or 3x Cash!' : prize.description}
+                {isWeightedCash
+                  ? 'R10 Spin • Win R10, R20, R50, or R100 Cash! (18+ Play Responsibly)'
+                  : isCashRound
+                    ? 'Bet from R5 • Spin rolls 1.5x, 2x, or 3x Cash! (18+ Play Responsibly)'
+                    : prize.description}
               </div>
             </div>
           )}
@@ -386,17 +395,22 @@ export function TvView() {
                 const winBet = Number(winEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
                 const winPayout = Number(winEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
                 const winMult = Number(currentRound?.appliedMultiplier || 1.5);
+                const tierLabel = currentRound?.prizeTierLabel;
                 return (
                   <div className="result-prize-box">
                     <span className="result-won-label">
-                      {isCashRound ? `🔥 ${winMult}X CASH MULTIPLIER HIT!` : 'WINS PRIZE:'}
+                      {isWeightedCash
+                        ? `🎯 ${tierLabel || `R${winPayout} CASH PRIZE`} HIT!`
+                        : isCashRound
+                          ? `🔥 ${winMult}X CASH MULTIPLIER HIT!`
+                          : 'WINS PRIZE:'}
                     </span>
                     <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
                       {isCashRound && winPayout > 0 ? `R${winPayout} CASH!` : prize.name}
                     </span>
                     <span className="result-prize-val">
                       {isCashRound && winBet > 0
-                        ? `${winMult}x their R${winBet} bet!`
+                        ? `${tierLabel || `${winMult}x`} on their R${winBet} stake!${currentRound?.redemptionCode ? ` • Code: ${currentRound.redemptionCode}` : ''}`
                         : prize.description}
                     </span>
                   </div>

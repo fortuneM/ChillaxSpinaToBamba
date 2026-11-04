@@ -2653,3 +2653,67 @@ body {
   flex-direction: column;
   gap: 0.65rem;
 }
+
+/* Owner Profitability Model, Cash Reserve & Launch Plan Styles */
+.host-warning-alert {
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  color: #fde68a;
+  padding: 0.65rem 0.9rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+}
+
+.reserve-controls-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.reserve-controls-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.owner-model-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
+.owner-model-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.owner-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.configurator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.6rem;
+  background: rgba(7, 13, 30, 0.65);
+  border: 1px solid rgba(0, 242, 254, 0.18);
+  border-radius: 10px;
+  padding: 0.65rem;
+}
+
+.owner-table-wrap {
+  overflow-x: auto;
+}
+
+.history-table tr.selected-row {
+  background: rgba(0, 242, 254, 0.14);
+}

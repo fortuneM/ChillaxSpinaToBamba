@@ -12,7 +12,8 @@ export function PlayerView() {
   const [errorMsg, setErrorMsg] = useState('');
   const [claimSuccessMsg, setClaimSuccessMsg] = useState('');
   const [isClaiming, setIsClaiming] = useState(false);
-  const [betAmount, setBetAmount] = useState(5);
+  const [betAmount, setBetAmount] = useState(10);
+  const [ageVerified, setAgeVerified] = useState(true);
 
   const playerToken = getPlayerToken();
 
@@ -94,13 +95,24 @@ export function PlayerView() {
       return;
     }
 
+    if (!ageVerified) {
+      setErrorMsg('You must confirm you are 18+ to enter.');
+      sounds.playError();
+      return;
+    }
+
+    const isWeightedCash = Boolean(
+      session?.currentRound?.isWeightedCash ||
+      session?.currentRound?.prize?.prize_type === 'weighted_cash'
+    );
     const isCashRound = Boolean(
       session?.currentRound?.isCashRound ||
-      session?.currentRound?.prize?.prize_type === 'cash_multiplier'
+      session?.currentRound?.prize?.prize_type === 'cash_multiplier' ||
+      isWeightedCash
     );
     const numericBet = Number(betAmount);
     if (isCashRound && (!Number.isFinite(numericBet) || numericBet < 5)) {
-      setErrorMsg('Minimum bet amount is R5 for 3x Cash Prize rounds!');
+      setErrorMsg('Minimum stake is R5 (recommended R10) for Cash Spin rounds!');
       sounds.playError();
       return;
     }
@@ -118,7 +130,8 @@ export function PlayerView() {
           number: num,
           playerToken,
           nickname: nickname.trim(),
-          betAmount: isCashRound ? numericBet : 0
+          betAmount: isCashRound ? numericBet : 0,
+          ageVerified: Boolean(ageVerified)
         })
       });
 
@@ -128,10 +141,16 @@ export function PlayerView() {
         sounds.playError();
       } else {
         sounds.playClick();
-        if (isCashRound) {
-          setClaimSuccessMsg(`You claimed #${num} with a R${data.betAmount} bet — Win R${Math.round(data.betAmount * 1.5 * 100) / 100} to R${Math.round(data.betAmount * 3 * 100) / 100} Cash!`);
+        if (isWeightedCash) {
+          setClaimSuccessMsg(
+            `You claimed #${num} with a R${data.betAmount} stake (Tx: ${data.txId || 'OK'}) — Win R10, R20, R50, or R100 Cash!`
+          );
+        } else if (isCashRound) {
+          setClaimSuccessMsg(
+            `You claimed #${num} with a R${data.betAmount} bet (Tx: ${data.txId || 'OK'}) — Win R${Math.round(data.betAmount * 1.5 * 100) / 100} to R${Math.round(data.betAmount * 3 * 100) / 100} Cash!`
+          );
         } else {
-          setClaimSuccessMsg(`You claimed Number #${num}! Good luck!`);
+          setClaimSuccessMsg(`You claimed Number #${num} (Tx: ${data.txId || 'OK'})! Good luck!`);
         }
       }
     } catch {
@@ -190,6 +209,15 @@ export function PlayerView() {
               </div>
             </div>
 
+            <label className="flex items-center gap-2 text-xs text-muted mb-2" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={ageVerified}
+                onChange={(e) => setAgeVerified(e.target.checked)}
+              />
+              <span>I confirm I am 18+ and accept the Chillax Spin &amp; Win responsible play rules.</span>
+            </label>
+
             {errorMsg && (
               <div className="player-error-alert">
                 <AlertCircle size={16} /> {errorMsg}
@@ -198,7 +226,7 @@ export function PlayerView() {
 
             <button
               type="submit"
-              disabled={loading || !code.trim()}
+              disabled={loading || !code.trim() || !ageVerified}
               className="arcade-btn-primary w-full"
             >
               {loading ? 'Connecting...' : 'Join Game'}
@@ -206,7 +234,7 @@ export function PlayerView() {
           </form>
 
           <div className="player-footer-note">
-            No registration or download required. Free arcade fun at Chillax Gaming Center.
+            18+ Responsible Play • Play within your budget • Chillax Gaming Center.
           </div>
         </div>
       </div>
@@ -216,7 +244,8 @@ export function PlayerView() {
   const status = session.status;
   const currentRound = session.currentRound;
   const prize = currentRound?.prize;
-  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier');
+  const isWeightedCash = Boolean(currentRound?.isWeightedCash || prize?.prize_type === 'weighted_cash');
+  const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier' || isWeightedCash);
   const myEntry = session.entries?.find((e) => e.player_token === playerToken);
   const myClaimedNumber = myEntry?.number;
   const isWinner = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber === currentRound?.winningNumber;
@@ -266,8 +295,11 @@ export function PlayerView() {
             MY PICK: <strong>#{myClaimedNumber}</strong>
             {isCashRound && myEntry?.bet_amount >= 5 && (
               <span>
-                {' '}• R{myEntry.bet_amount} (Win R{Math.round(myEntry.bet_amount * 1.5 * 100) / 100}–R{Math.round(myEntry.bet_amount * 3 * 100) / 100})
+                {' '}• R{myEntry.bet_amount}
               </span>
+            )}
+            {myEntry?.tx_id && (
+              <span className="text-xs text-cyan"> ({myEntry.tx_id})</span>
             )}
           </div>
         )}
@@ -278,7 +310,7 @@ export function PlayerView() {
         {status === 'REGISTRATION_OPEN' && (
           <div className="banner-content open">
             <span className="pulse-dot green" />
-            <span>Select one available number below!</span>
+            <span>Select one available number below! (18+ Responsible Play)</span>
           </div>
         )}
         {status === 'REGISTRATION_CLOSED' && (
@@ -305,29 +337,48 @@ export function PlayerView() {
       {prize && (
         <div className="player-prize-card">
           <div className="prize-pill" style={{ background: prize.color || '#00f2fe' }}>
-            {isCashRound ? '💰 REAL CASH MULTIPLIER ROUND' : "THIS ROUND'S PRIZE"}
+            {isWeightedCash
+              ? '🎯 R10 SPIN CASH SCHEDULE (R10 / R20 / R50 / R100)'
+              : isCashRound
+                ? '💰 REAL CASH MULTIPLIER ROUND'
+                : "THIS ROUND'S PRIZE"}
           </div>
           <div className="prize-title">{prize.name}</div>
           <div className="prize-desc">{prize.description}</div>
         </div>
       )}
 
-      {/* Cash Bet Amount Selector (For 1.5x / 2x / 3x Cash Multiplier Rounds) */}
+      {/* Cash Bet Amount Selector */}
       {isCashRound && (
         <div className="player-bet-card">
           <div className="player-bet-header">
-            <span className="bet-title">💰 Enter Your Bet (Min R5)</span>
+            <span className="bet-title">
+              {isWeightedCash ? '🎯 Choose Spin Stake (R10 Standard)' : '💰 Enter Your Bet (Min R5)'}
+            </span>
             <span className="bet-payout-preview">
-              Win: <strong>R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 1.5 * 100) / 100 : 0} – R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</strong>
+              {isWeightedCash ? (
+                <>Tiers: <strong>R10 • R20 • R50 • R100</strong></>
+              ) : (
+                <>Win: <strong>R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 1.5 * 100) / 100 : 0} – R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</strong></>
+              )}
             </span>
           </div>
-          <div className="bet-multiplier-tiers">
-            <span className="mult-tier-pill">1.5x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 1.5 * 100) / 100 : 0}</span>
-            <span className="mult-tier-pill tier-2x">2x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 2 * 100) / 100 : 0}</span>
-            <span className="mult-tier-pill tier-3x">3x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</span>
-          </div>
+          {isWeightedCash ? (
+            <div className="bet-multiplier-tiers">
+              <span className="mult-tier-pill">R10 (1 in 25)</span>
+              <span className="mult-tier-pill tier-2x">R20 (1 in 200)</span>
+              <span className="mult-tier-pill tier-3x">R50 (1 in 1,000)</span>
+              <span className="mult-tier-pill tier-3x">R100 (1 in 4,000)</span>
+            </div>
+          ) : (
+            <div className="bet-multiplier-tiers">
+              <span className="mult-tier-pill">1.5x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 1.5 * 100) / 100 : 0}</span>
+              <span className="mult-tier-pill tier-2x">2x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 2 * 100) / 100 : 0}</span>
+              <span className="mult-tier-pill tier-3x">3x: R{Number(betAmount) >= 5 ? Math.round(Number(betAmount) * 3 * 100) / 100 : 0}</span>
+            </div>
+          )}
           <div className="bet-presets-row">
-            {[5, 10, 20, 50, 100].map((amt) => (
+            {[5, 10, 20, 50].map((amt) => (
               <button
                 key={amt}
                 type="button"
@@ -358,7 +409,7 @@ export function PlayerView() {
                 onClick={() => handleClaimNumber(myClaimedNumber)}
                 className="bet-update-btn"
               >
-                Update Bet
+                Update Stake
               </button>
             )}
           </div>
@@ -390,7 +441,7 @@ export function PlayerView() {
           <div className="winner-prize-display" style={{ borderColor: prize?.color || '#00f2fe' }}>
             <span className="won-prize-label">
               {isCashRound
-                ? `🔥 ${currentRound?.appliedMultiplier || 1.5}X CASH MULTIPLIER WON!`
+                ? `🔥 ${currentRound?.prizeTierLabel || `${currentRound?.appliedMultiplier || 1.5}X CASH`} WON!`
                 : 'PRIZE WON'}
             </span>
             <span className="won-prize-name">
@@ -400,16 +451,16 @@ export function PlayerView() {
             </span>
             <span className="won-prize-desc">
               {isCashRound && myEntry?.bet_amount
-                ? `${currentRound?.appliedMultiplier || 1.5}x your R${myEntry.bet_amount} bet!`
+                ? `${currentRound?.prizeTierLabel || `${currentRound?.appliedMultiplier || 1.5}x`} on your R${myEntry.bet_amount} stake!`
                 : prize?.description}
             </span>
           </div>
           <div className="redemption-token-box">
-            <span>VERIFICATION TOKEN</span>
-            <code>{playerToken.slice(-6).toUpperCase()}</code>
+            <span>REDEMPTION CODE &amp; TOKEN</span>
+            <code>{currentRound?.redemptionCode || playerToken.slice(-6).toUpperCase()}</code>
           </div>
           <p className="winner-instructions">
-            Show this screen to the Chillax counter staff to redeem your prize!
+            Show this Redemption Code to the Chillax counter staff to verify &amp; claim your prize!
           </p>
         </div>
       )}

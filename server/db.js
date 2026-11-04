@@ -206,8 +206,43 @@ try {
 } catch(e) {}
 
 try {
+  db.exec('ALTER TABLE entries ADD COLUMN tx_id TEXT;');
+} catch(e) {}
+
+try {
+  db.exec('ALTER TABLE entries ADD COLUMN age_verified INTEGER NOT NULL DEFAULT 1;');
+} catch(e) {}
+
+try {
   db.exec('ALTER TABLE rounds ADD COLUMN applied_multiplier REAL DEFAULT 0;');
 } catch(e) {}
+
+try {
+  db.exec('ALTER TABLE rounds ADD COLUMN redemption_code TEXT;');
+} catch(e) {}
+
+try {
+  db.exec('ALTER TABLE rounds ADD COLUMN prize_tier_label TEXT;');
+} catch(e) {}
+
+// Separate Ring-Fenced Cash Reserve Ledger (Section 3 & Section 8 of Launch Plan)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS cash_reserve_ledger (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    round_id TEXT,
+    entry_id TEXT,
+    tx_id TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    committed_delta REAL NOT NULL DEFAULT 0,
+    paid_delta REAL NOT NULL DEFAULT 0,
+    notes TEXT,
+    actor_id TEXT DEFAULT 'system',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_reserve_ledger_session ON cash_reserve_ledger(session_id);
+`);
 
 // Insert default prizes if not exist
 const countPrizes = db.prepare('SELECT COUNT(*) as c FROM prizes').get();
@@ -218,7 +253,8 @@ if (countPrizes.c === 0) {
   `);
 
   const defaultPrizes = [
-    { id: 'prize_cash_3x', name: '💰 Cash Multiplier (1.5x / 2x / 3x)', description: 'Win 1.5x, 2x, or 3x your bet in real cash! (Min bet R5)', prizeType: 'cash_multiplier', value: '1.5x–3x Cash', color: '#10b981' },
+    { id: 'prize_weighted_cash', name: '🎯 R10 Spin Cash Schedule (R10 / R20 / R50 / R100)', description: 'Weighted Cash Engine • R10 (4%), R20 (0.5%), R50 (0.1%), R100 (0.025%) • Expected R0.575/spin', prizeType: 'weighted_cash', value: 'R10–R100 Cash', color: '#059669' },
+    { id: 'prize_cash_3x', name: '💰 Cash Multiplier (1.5x / 2x / 3x)', description: 'Win 1.5x, 2x, or 3x your bet in real cash! (Min bet R5, Max R100 win)', prizeType: 'cash_multiplier', value: '1.5x–3x Cash', color: '#10b981' },
     { id: 'prize_1', name: '10 Mins PS5 Gaming', description: '10 free minutes on PS5 console', prizeType: 'gaming_time', value: '10 mins', color: '#8b5cf6' },
     { id: 'prize_2', name: 'Free Cold Beverage', description: 'Any chilled soda or energy drink', prizeType: 'snack', value: 'Soda / Juice', color: '#06b6d4' },
     { id: 'prize_3', name: 'Chips & Dip Combo', description: 'Snack pack from the counter', prizeType: 'snack', value: 'Snack Pack', color: '#f59e0b' },
@@ -231,7 +267,19 @@ if (countPrizes.c === 0) {
     insertPrize.run(p.id, p.name, p.description, p.prizeType, p.value, p.color, 1, 99);
   }
 } else {
-  // Ensure the dynamic Cash Multiplier (1.5x / 2x / 3x) prize exists and is up to date
+  // Ensure both the Weighted R10 Cash Schedule (Launch Plan Section 2) and Cash Multiplier exist
+  db.prepare(`
+    INSERT OR IGNORE INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
+    VALUES ('prize_weighted_cash', '🎯 R10 Spin Cash Schedule (R10 / R20 / R50 / R100)', 'Weighted Cash Engine • R10 (4%), R20 (0.5%), R50 (0.1%), R100 (0.025%) • Expected R0.575/spin', 'weighted_cash', 'R10–R100 Cash', '#059669', 1, 999)
+  `).run();
+  db.prepare(`
+    UPDATE prizes
+    SET name = '🎯 R10 Spin Cash Schedule (R10 / R20 / R50 / R100)',
+        description = 'Weighted Cash Engine • R10 (4%), R20 (0.5%), R50 (0.1%), R100 (0.025%) • Expected R0.575/spin',
+        value = 'R10–R100 Cash'
+    WHERE id = 'prize_weighted_cash'
+  `).run();
+
   db.prepare(`
     INSERT OR IGNORE INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
     VALUES ('prize_cash_3x', '💰 Cash Multiplier (1.5x / 2x / 3x)', 'Win 1.5x, 2x, or 3x your bet in real cash! (Min bet R5)', 'cash_multiplier', '1.5x–3x Cash', '#10b981', 1, 999)
@@ -243,6 +291,28 @@ if (countPrizes.c === 0) {
         value = '1.5x–3x Cash'
     WHERE id = 'prize_cash_3x'
   `).run();
+}
+
+export function logReserveLedger({
+  sessionId,
+  roundId = null,
+  entryId = null,
+  txId = null,
+  entryType,
+  amount = 0,
+  committedDelta = 0,
+  paidDelta = 0,
+  notes = '',
+  actorId = 'system'
+}) {
+  const id = 'led_' + Math.random().toString(36).substring(2, 10);
+  const createdAt = new Date().toISOString();
+  const resolvedTxId = txId || ('TX-' + Math.random().toString(36).substring(2, 8).toUpperCase());
+  db.prepare(`
+    INSERT INTO cash_reserve_ledger (id, session_id, round_id, entry_id, tx_id, entry_type, amount, committed_delta, paid_delta, notes, actor_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, sessionId, roundId, entryId, resolvedTxId, entryType, amount, committedDelta, paidDelta, notes, actorId, createdAt);
+  return { id, txId: resolvedTxId, createdAt };
 }
 
 export function logAudit(sessionId, actorType, actorId, action, metadata = {}) {
