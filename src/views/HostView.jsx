@@ -906,6 +906,14 @@ export function HostView() {
   const activeShopCode = linkedShop?.shopCode || session.shopCode || session.shortCode;
   const activeShopName = linkedShop?.name || session.shopName || 'CHILLAX';
 
+  // Simple Rand formatter (avoids ugly R-340 or long decimals)
+  const fmtR = (val, showPlus = false) => {
+    const num = Math.round(Number(val) || 0);
+    if (num < 0) return `-R${Math.abs(num).toLocaleString('en-ZA')}`;
+    if (showPlus && num > 0) return `+R${num.toLocaleString('en-ZA')}`;
+    return `R${num.toLocaleString('en-ZA')}`;
+  };
+
   // For grid display, show 0 and 00 at the top followed by numbers in ascending order
   const allWheelPockets = session?.wheelNumbers || [];
   const zeros = allWheelPockets.filter((n) => n === '0' || n === '00');
@@ -1025,10 +1033,10 @@ export function HostView() {
           <div className="prize-info">
             <div className="prize-label">
               {isWeightedCash
-                ? '🎯 WEIGHTED CASH SCHEDULE (R10 / R20 / R50 / R100 • 4.625% WIN RATE)'
+                ? '🎯 R10 CASH SPIN (WIN R10, R20, R50 OR R100)'
                 : isCashRound
-                  ? '💰 SMART CASH MODE (1.5X • 2X • 3X | MIN R5)'
-                  : 'CURRENT ROUND PRIZE'}
+                  ? '💰 CASH MULTIPLIER (WIN 1.5X, 2X OR 3X)'
+                  : '🎁 CURRENT ROUND PRIZE'}
             </div>
             {status === 'REGISTRATION_OPEN' ? (
               <select
@@ -1052,9 +1060,9 @@ export function HostView() {
                 type="button"
                 onClick={() => handleChangeRoundPrize('prize_weighted_cash')}
                 className={`host-cash-mode-btn ${isWeightedCash ? 'active' : ''}`}
-                title="R10 Spin Weighted Cash Schedule (R10 @ 4%, R20 @ 0.5%, R50 @ 0.1%, R100 @ 0.025%)"
+                title="R10 Cash Spin (Win R10, R20, R50, or R100)"
               >
-                🎯 R10 Cash Schedule
+                🎯 R10 Cash Spin
               </button>
               <button
                 type="button"
@@ -1067,7 +1075,7 @@ export function HostView() {
                   }
                 }}
                 className={`host-cash-mode-btn ${prize.prize_type === 'cash_multiplier' ? 'active' : ''}`}
-                title="Toggle Smart Cash Multiplier Mode (1.5x / 2x / 3x)"
+                title="1.5x / 2x / 3x Cash Multiplier"
               >
                 {prize.prize_type === 'cash_multiplier' ? '💰 1.5x–3x ON' : '💰 1.5x–3x Mode'}
               </button>
@@ -1077,7 +1085,7 @@ export function HostView() {
         </div>
       )}
 
-      {/* House Profit Protection & Ring-Fenced R1,000 Cash Reserve Engine */}
+      {/* Simplified Live Cash & R1,000 Prize Budget Card */}
       {session.houseCashStats && (
         <div className={`host-profit-engine-card ${showProfitEngine ? 'expanded' : 'collapsed'}`}>
           <div
@@ -1093,20 +1101,12 @@ export function HostView() {
             }}
           >
             <span className="profit-engine-title">
-              🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x) &amp; R{stats.monthlyCashReserve || 1000} RESERVE
+              🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x)
             </span>
             <div className="profit-engine-header-right">
-              {showProfitEngine && (
-                <span className={`profit-3x-status ${stats.isReserveExhausted ? 'locked' : stats.is3xReady ? 'unlocked' : 'locked'}`}>
-                  {stats.isReserveExhausted
-                    ? '🛑 Reserve Exhausted'
-                    : isWeightedCash
-                      ? `🎯 R${stats.availableCashReserve} Reserve Available`
-                      : stats.is3xReady
-                        ? '🔓 3x Jackpot Unlocked'
-                        : '🔒 3x Gated (1.5x / 2x Active)'}
-                </span>
-              )}
+              <span className={`profit-3x-status ${stats.isReserveExhausted ? 'locked' : 'unlocked'}`}>
+                Budget Left: {fmtR(stats.availableCashReserve)} / {fmtR(stats.monthlyCashReserve || 1000)}
+              </span>
               <button
                 type="button"
                 className="profit-toggle-btn"
@@ -1114,17 +1114,8 @@ export function HostView() {
                   e.stopPropagation();
                   toggleProfitEngine();
                 }}
-                title={showProfitEngine ? 'Hide Smart Profit-Guard Engine' : 'Show Smart Profit-Guard Engine'}
               >
-                {showProfitEngine ? (
-                  <>
-                    <EyeOff size={13} /> Hide
-                  </>
-                ) : (
-                  <>
-                    <Eye size={13} /> Show
-                  </>
-                )}
+                {showProfitEngine ? <><EyeOff size={13} /> Hide</> : <><Eye size={13} /> Show</>}
               </button>
             </div>
           </div>
@@ -1132,69 +1123,43 @@ export function HostView() {
             <>
               <div className="profit-metrics-grid">
                 <div className="profit-metric-box">
-                  <span className="metric-label">Collected (Stakes)</span>
-                  <span className="metric-val">R{stats.historicalCollected + (session.totalBets || 0)}</span>
+                  <span className="metric-label">Money In (Spins)</span>
+                  <span className="metric-val">{fmtR(stats.historicalCollected + (session.totalBets || 0))}</span>
                 </div>
                 <div className="profit-metric-box">
-                  <span className="metric-label">Settled Paid Out</span>
-                  <span className="metric-val">R{stats.settledCashPaid ?? stats.historicalPaidOut}</span>
+                  <span className="metric-label">Prizes Paid Out</span>
+                  <span className="metric-val">{fmtR(stats.settledCashPaid ?? stats.historicalPaidOut)}</span>
                 </div>
-                <div className="profit-metric-box" title="Unredeemed winnings are never counted as available cash">
-                  <span className="metric-label">Unredeemed Liability</span>
-                  <span className="metric-val text-gold">R{stats.outstandingCashLiabilities || 0}</span>
+                <div className="profit-metric-box" title="Won prizes waiting to be collected at the counter">
+                  <span className="metric-label">Waiting to Collect</span>
+                  <span className="metric-val text-gold">{fmtR(stats.outstandingCashLiabilities || 0)}</span>
                 </div>
                 <div className="profit-metric-box">
-                  <span className="metric-label">Net Spin Contrib.</span>
+                  <span className="metric-label">Your Spin Profit</span>
                   <span className="metric-val text-green">
-                    R{Math.round(((stats.netSpinContribution ?? stats.netProfit) + (session.totalBets || 0)) * 100) / 100}
-                  </span>
-                </div>
-                <div className="profit-metric-box">
-                  <span className="metric-label">Ring-Fenced Reserve</span>
-                  <span className="metric-val text-cyan">
-                    R{stats.availableCashReserve} / R{stats.monthlyCashReserve}
-                  </span>
-                </div>
-                <div className="profit-metric-box">
-                  <span className="metric-label">Daily / Weekly Cap</span>
-                  <span className="metric-val">
-                    R{stats.dailyCashCommitted}/R{stats.dailyExposureLimit} • R{stats.weeklyCashCommitted}/R{stats.weeklyExposureLimit}
-                  </span>
-                </div>
-                <div className="profit-metric-box">
-                  <span className="metric-label">Surplus (3x Gate)</span>
-                  <span className="metric-val text-gold">R{stats.surplusReserve}</span>
-                </div>
-                <div className="profit-metric-box">
-                  <span className="metric-label">Unique / Repeat</span>
-                  <span className="metric-val">
-                    {stats.uniquePlayersCount || 0} ({stats.repeatPlaysCount || 0} rpt)
+                    {fmtR((stats.netSpinContribution ?? stats.netProfit) + (session.totalBets || 0), true)}
                   </span>
                 </div>
               </div>
 
               <div className="reserve-controls-bar">
-                <div className="reserve-controls-left">
-                  <span className="text-xs text-muted">
-                    Warn @ R{stats.warningThreshold} • Auto-Stop @ R{stats.suspensionThreshold} • Max Single Win R{stats.maxSingleCashPrize || 100}
-                  </span>
-                </div>
+                <span className="text-xs text-muted">
+                  Monthly Prize Budget Left: <strong className="text-cyan">{fmtR(stats.availableCashReserve)}</strong> of {fmtR(stats.monthlyCashReserve)} (Max single win: R100)
+                </span>
                 <div className="reserve-controls-actions">
                   <button
                     type="button"
                     onClick={() => handleReplenishReserve(500)}
                     className="profit-toggle-btn"
-                    title="Add R500 to the ring-fenced cash-prize reserve"
                   >
-                    + Replenish R500
+                    + Add R500 Budget
                   </button>
                   <button
                     type="button"
                     onClick={() => handleToggleEmergencySuspend(!stats.emergencySuspended)}
                     className={`profit-toggle-btn ${stats.emergencySuspended ? 'text-green' : 'text-danger'}`}
-                    title="Emergency control: suspend or resume new paid entries without deleting existing obligations"
                   >
-                    {stats.emergencySuspended ? '✓ Resume Entries' : '🚨 Emergency Suspend'}
+                    {stats.emergencySuspended ? '▶ Resume Entries' : '⏸ Pause Entries'}
                   </button>
                 </div>
               </div>
@@ -1203,7 +1168,7 @@ export function HostView() {
         </div>
       )}
 
-      {/* Owner Profitability Model, Weighted Prize Schedule & Launch Plan Card (PDF Spec) */}
+      {/* Simplified Monthly Profit Calculator & Game Plan */}
       {profModel && (
         <div className={`host-profit-engine-card ${showOwnerModel ? 'expanded' : 'collapsed'}`}>
           <div
@@ -1219,12 +1184,14 @@ export function HostView() {
             }}
           >
             <span className="profit-engine-title">
-              📊 OWNER PROFITABILITY MODEL, PRIZE SCHEDULE &amp; LAUNCH PLAN
+              📊 MONTHLY PROFIT CALCULATOR &amp; GAME PLAN
             </span>
             <div className="profit-engine-header-right">
-              <span className="text-xs text-cyan">
-                {profModel.spinPrice ? `R${profModel.spinPrice}/spin` : 'R10/spin'} • EV R{profModel.expectedPayoutPerSpin}/spin
-              </span>
+              {profModel.selectedScenario && (
+                <span className="text-xs text-green font-bold">
+                  Est. +{fmtR(profModel.selectedScenario.netSpinContribution)}/mo
+                </span>
+              )}
               <button
                 type="button"
                 className="profit-toggle-btn"
@@ -1233,44 +1200,44 @@ export function HostView() {
                   toggleOwnerModel();
                 }}
               >
-                {showOwnerModel ? <><EyeOff size={13} /> Hide</> : <><Eye size={13} /> Show Plan</>}
+                {showOwnerModel ? <><EyeOff size={13} /> Hide</> : <><Eye size={13} /> Show</>}
               </button>
             </div>
           </div>
 
           {showOwnerModel && (
             <div className="owner-model-body">
-              {/* Sub-navigation Tabs */}
+              {/* Simple 3-Tab Bar */}
               <div className="owner-model-tabs">
                 <button
                   type="button"
                   onClick={() => setOwnerModelTab('profitability')}
                   className={`range-pill ${ownerModelTab === 'profitability' ? 'active' : ''}`}
                 >
-                  📈 Profitability &amp; Fixed Costs
+                  💰 Profit Calculator
                 </button>
                 <button
                   type="button"
                   onClick={() => setOwnerModelTab('schedule')}
                   className={`range-pill ${ownerModelTab === 'schedule' ? 'active' : ''}`}
                 >
-                  🎯 Weighted Cash Schedule (4.625%)
+                  🎯 Cash Prize Odds
                 </button>
                 <button
                   type="button"
                   onClick={() => setOwnerModelTab('calendar')}
                   className={`range-pill ${ownerModelTab === 'calendar' ? 'active' : ''}`}
                 >
-                  📅 Hybrid Promo Calendar &amp; Rules
+                  📅 Weekly Plan
                 </button>
               </div>
 
-              {ownerModelTab === 'profitability' && (
+              {ownerModelTab === 'profitability' && profModel.selectedScenario && (
                 <div className="owner-tab-panel">
-                  {/* Commercial Decision Configurator (Page 6 of PDF) */}
-                  <div className="configurator-grid">
-                    <div className="config-item">
-                      <label className="text-xs text-muted block mb-1">Daily Footfall (26 days/mo)</label>
+                  {/* 3 Simple Step Controls */}
+                  <div className="simple-calc-controls">
+                    <div className="simple-calc-group">
+                      <span className="simple-calc-label">1. Customers per day</span>
                       <div className="flex gap-1">
                         {[50, 70].map((cust) => (
                           <button
@@ -1279,14 +1246,14 @@ export function HostView() {
                             onClick={() => handleUpdateFinancialSettings({ dailyCustomers: cust })}
                             className={`wheel-preset-pill ${Number(profModel.dailyCustomers) === cust ? 'active' : ''}`}
                           >
-                            {cust}/day ({cust * 26}/mo)
+                            {cust} / day
                           </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="config-item">
-                      <label className="text-xs text-muted block mb-1">Proposed Spin Price</label>
+                    <div className="simple-calc-group">
+                      <span className="simple-calc-label">2. Price per spin</span>
                       <div className="flex gap-1">
                         {[5, 10, 20].map((price) => (
                           <button
@@ -1298,191 +1265,160 @@ export function HostView() {
                             }}
                             className={`wheel-preset-pill ${Number(profModel.spinPrice) === price ? 'active' : ''}`}
                           >
-                            R{price}{price === 10 ? ' (Rec)' : ''}
+                            R{price}{price === 10 ? ' ⭐' : ''}
                           </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="config-item">
-                      <label className="text-xs text-muted block mb-1">Operating Route</label>
+                    <div className="simple-calc-group">
+                      <span className="simple-calc-label">3. How many play?</span>
                       <div className="flex gap-1">
                         {[
-                          { id: 'PARTNER', label: 'Partner' },
-                          { id: 'OWN_LICENCE', label: 'Own Licence' },
-                          { id: 'COMPARE', label: 'Compare' }
-                        ].map((rt) => (
+                          { pct: 25, label: 'Low (25%)' },
+                          { pct: 50, label: 'Half (50% ⭐)' },
+                          { pct: 100, label: 'All (100%)' }
+                        ].map((opt) => (
                           <button
-                            key={rt.id}
+                            key={opt.pct}
                             type="button"
-                            onClick={() => handleUpdateFinancialSettings({ operatingRoute: rt.id })}
-                            className={`wheel-preset-pill ${profModel.operatingRoute === rt.id ? 'active' : ''}`}
+                            onClick={() => handleUpdateFinancialSettings({ targetUptakeRatePct: opt.pct })}
+                            className={`wheel-preset-pill ${Number(profModel.targetUptakeRatePct) === opt.pct ? 'active' : ''}`}
                           >
-                            {rt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="config-item">
-                      <label className="text-xs text-muted block mb-1">Operator Revenue Share</label>
-                      <div className="flex gap-1">
-                        {[0, 10, 20, 30].map((pct) => (
-                          <button
-                            key={pct}
-                            type="button"
-                            onClick={() => handleUpdateFinancialSettings({ operatorSharePct: pct })}
-                            className={`wheel-preset-pill ${Number(profModel.operatorSharePct) === pct ? 'active' : ''}`}
-                          >
-                            {pct}%
+                            {opt.label}
                           </button>
                         ))}
                       </div>
                     </div>
                   </div>
 
-                  {/* Participation Scenarios Table (25%, 50%, 100%) */}
-                  <div className="owner-table-wrap mt-2">
-                    <div className="text-xs font-bold text-cyan mb-1">
-                      MONTHLY SPIN &amp; WIN PARTICIPATION SCENARIOS ({profModel.monthlyCustomerVisits} visits/mo @ R{profModel.spinPrice}/spin)
+                  {/* 3 Big Clear Monthly Result Boxes */}
+                  <div className="simple-summary-cards">
+                    <div className="simple-summary-card">
+                      <span className="simple-card-title">MONTHLY SPIN MONEY IN</span>
+                      <span className="simple-card-big text-cyan">
+                        {fmtR(profModel.selectedScenario.grossSpinRevenue)}
+                      </span>
+                      <span className="simple-card-sub">
+                        {profModel.selectedScenario.monthlySpins} spins/mo × R{profModel.spinPrice}
+                      </span>
                     </div>
-                    <table className="history-table">
-                      <thead>
-                        <tr>
-                          <th>Uptake</th>
-                          <th>Spins/Mo</th>
-                          <th>Gross Rev</th>
-                          <th>Exp. Cash Payout</th>
-                          <th>Op. Share ({profModel.operatorSharePct}%)</th>
-                          <th>Net Contribution</th>
-                          <th>R1k Reserve Left</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(profModel.scenarios || []).map((sc) => (
-                          <tr
-                            key={sc.uptakePct}
-                            className={Number(profModel.targetUptakeRatePct) === sc.uptakePct ? 'selected-row' : ''}
-                            onClick={() => handleUpdateFinancialSettings({ targetUptakeRatePct: sc.uptakePct })}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <td>
-                              <strong>{sc.uptakePct}%</strong> {sc.uptakePct === 50 ? '⭐' : ''}
-                            </td>
-                            <td>{sc.monthlySpins}</td>
-                            <td>R{sc.grossSpinRevenue}</td>
-                            <td>R{sc.expectedCashPayout}</td>
-                            <td>R{sc.operatorShareAmount}</td>
-                            <td className="text-green font-bold">R{sc.netSpinContribution}</td>
-                            <td className={sc.reserveRemaining >= 0 ? 'text-cyan' : 'text-danger'}>
-                              R{sc.reserveRemaining}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+
+                    <div className="simple-summary-card">
+                      <span className="simple-card-title">EST. CASH PRIZES PAID</span>
+                      <span className="simple-card-big text-gold">
+                        ~{fmtR(profModel.selectedScenario.expectedCashPayout)}
+                      </span>
+                      <span className="simple-card-sub">
+                        {profModel.selectedScenario.reserveRemaining >= 0
+                          ? `${fmtR(profModel.selectedScenario.reserveRemaining)} left in R1,000 budget`
+                          : 'Needs budget top-up'}
+                      </span>
+                    </div>
+
+                    <div className="simple-summary-card highlight-green">
+                      <span className="simple-card-title">EXTRA PROFIT YOU KEEP</span>
+                      <span className="simple-card-big text-green">
+                        {fmtR(profModel.selectedScenario.netSpinContribution, true)}
+                      </span>
+                      <span className="simple-card-sub">
+                        Added to your shop every month
+                      </span>
+                    </div>
                   </div>
 
-                  {/* Full Business Fixed-Cost Coverage Summary (Rent R14k + Energy R6.5k-R10k) */}
-                  {profModel.selectedScenario && (
-                    <div className="profit-metrics-grid mt-2">
-                      <div className="profit-metric-box">
-                        <span className="metric-label">Ordinary Sales (26d)</span>
-                        <span className="metric-val">R{profModel.monthlyOrdinarySales}</span>
+                  {/* Simple Rent & Electricity Comparison Box */}
+                  <div className="simple-shop-bill-box">
+                    <div className="simple-bill-title">
+                      🏠 Does Spin &amp; Win Help Cover Rent &amp; Electricity?
+                    </div>
+                    <div className="simple-bill-rows">
+                      <div className="simple-bill-row">
+                        <span>Normal Shop Profit ({profModel.dailyCustomers}/day × R20 × 65% margin):</span>
+                        <strong>{fmtR(profModel.ordinaryGrossContribution, true)} / mo</strong>
                       </div>
-                      <div className="profit-metric-box">
-                        <span className="metric-label">Ordinary 65% Margin</span>
-                        <span className="metric-val">R{profModel.ordinaryGrossContribution}</span>
+                      <div className="simple-bill-row">
+                        <span>Monthly Rent (R14,000) + Power (R6,500):</span>
+                        <strong className="text-danger">-{fmtR(profModel.combinedFixedLow)} / mo</strong>
                       </div>
-                      <div className="profit-metric-box">
-                        <span className="metric-label">Rent + Energy Fixed</span>
-                        <span className="metric-val text-danger">
-                          R{profModel.combinedFixedLow}–R{profModel.combinedFixedHigh}
-                        </span>
+                      <div className="simple-bill-row divider">
+                        <span>Shop WITHOUT Spin &amp; Win:</span>
+                        <strong className={profModel.ordinaryNetLowEnergy >= 0 ? 'text-green' : 'text-danger'}>
+                          {fmtR(profModel.ordinaryNetLowEnergy, true)} / mo
+                        </strong>
                       </div>
-                      <div className="profit-metric-box">
-                        <span className="metric-label">Before Spin &amp; Win</span>
-                        <span className="metric-val text-danger">
-                          R{profModel.ordinaryNetLowEnergy} to R{profModel.ordinaryNetHighEnergy}
-                        </span>
-                      </div>
-                      <div className="profit-metric-box">
-                        <span className="metric-label">After Spin ({profModel.targetUptakeRatePct}% Uptake)</span>
-                        <span className={`metric-val ${profModel.selectedScenario.totalShopNetLowEnergy >= 0 ? 'text-green' : 'text-gold'}`}>
-                          R{profModel.selectedScenario.totalShopNetLowEnergy} to R{profModel.selectedScenario.totalShopNetHighEnergy}
-                        </span>
+                      <div className="simple-bill-row total-row">
+                        <span>Shop WITH Spin &amp; Win ({profModel.targetUptakeRatePct}% play):</span>
+                        <strong className={profModel.selectedScenario.totalShopNetLowEnergy >= 0 ? 'text-green' : 'text-gold'}>
+                          {fmtR(profModel.selectedScenario.totalShopNetLowEnergy, true)} / mo
+                        </strong>
                       </div>
                     </div>
-                  )}
-
-                  <div className="text-xs text-muted mt-2">
-                    <strong>Formula:</strong> <code>{stats.formulaText}</code>
                   </div>
                 </div>
               )}
 
               {ownerModelTab === 'schedule' && (
                 <div className="owner-tab-panel">
-                  <div className="text-xs text-muted mb-2">
-                    <strong>Section 2 — Weighted Cash-Prize Schedule (4,000-Slot Engine):</strong> TV displays the 20/22-section wheel while the server selects outcomes using the auditable weighted table below (4.625% win probability, R0.575 expected payout per R10 spin).
+                  <div className="simple-odds-grid">
+                    <div className="simple-odd-card">
+                      <span className="odd-prize text-cyan">Win R10 Cash</span>
+                      <span className="odd-chance">1 in 25 spins</span>
+                      <span className="odd-desc">4% chance • Small regular win</span>
+                    </div>
+                    <div className="simple-odd-card">
+                      <span className="odd-prize text-cyan">Win R20 Cash</span>
+                      <span className="odd-chance">1 in 200 spins</span>
+                      <span className="odd-desc">0.5% chance • Double win</span>
+                    </div>
+                    <div className="simple-odd-card">
+                      <span className="odd-prize text-gold">Win R50 Cash</span>
+                      <span className="odd-chance">1 in 1,000 spins</span>
+                      <span className="odd-desc">0.1% chance • Big win</span>
+                    </div>
+                    <div className="simple-odd-card">
+                      <span className="odd-prize text-green">Win R100 Cash</span>
+                      <span className="odd-chance">1 in 4,000 spins</span>
+                      <span className="odd-desc">0.025% chance • Top jackpot</span>
+                    </div>
                   </div>
-                  <table className="history-table">
-                    <thead>
-                      <tr>
-                        <th>Prize Tier</th>
-                        <th>Win Probability</th>
-                        <th>Approximate Odds</th>
-                        <th>Weighting</th>
-                        <th>Expected Cost / Spin</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(stats.weightedCashSchedule?.tiers || []).map((tier) => (
-                        <tr key={tier.id}>
-                          <td className="font-bold text-gold">{tier.label}</td>
-                          <td className="text-cyan">{tier.probabilityPct}%</td>
-                          <td>{tier.oddsLabel}</td>
-                          <td>{tier.weight} / 4,000</td>
-                          <td>R{tier.expectedCostPerSpin.toFixed(3)}</td>
-                        </tr>
-                      ))}
-                      <tr>
-                        <td><strong>Total Win / Non-Win</strong></td>
-                        <td className="text-green font-bold">4.625% Win (95.375% House)</td>
-                        <td>~1 in 21.62 spins</td>
-                        <td>185 / 4,000</td>
-                        <td className="text-green font-bold">R0.575 / R10 spin</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  <div className="simple-note-box">
+                    💡 <strong>How it works:</strong> About <strong>95% of spins cost R0</strong>. Out of every 22 spins, roughly 1 spin wins cash. On average, cash prizes cost only <strong>58 cents per R10 spin</strong> (you keep ~94%).
+                  </div>
                 </div>
               )}
 
               {ownerModelTab === 'calendar' && (
                 <div className="owner-tab-panel">
-                  <div className="text-xs font-bold text-cyan mb-1">
-                    HYBRID PROMOTIONAL CALENDAR (SPIN &amp; WIN + TOURNAMENTS)
-                  </div>
-                  <table className="history-table mb-2">
-                    <thead>
-                      <tr>
-                        <th>Days</th>
-                        <th>Activity</th>
-                        <th>Commercial Purpose</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(stats.promotionalCalendar || []).map((item) => (
-                        <tr key={item.days}>
-                          <td className="font-bold text-gold">{item.days}</td>
-                          <td className="text-cyan">{item.activity}</td>
-                          <td>{item.purpose}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div className="text-xs text-muted">
-                    <strong>Ring-Fenced Reserve Rules:</strong> (1) Keep R1,000 in a separate cash ledger; (2) Record every winning result immediately; (3) Never count unredeemed winnings as available cash; (4) Auto-suspend new paid entries before reserve is exhausted; (5) Never change prize/odds after customers have paid in a round.
+                  <div className="simple-calendar-list">
+                    <div className="simple-cal-item">
+                      <span className="cal-day">Tue – Thu</span>
+                      <div className="cal-info">
+                        <strong>Daily Spin Promo</strong>
+                        <span>Use free PS5 gaming minutes or snack prizes to bring players in on quiet days.</span>
+                      </div>
+                    </div>
+                    <div className="simple-cal-item">
+                      <span className="cal-day">Friday</span>
+                      <div className="cal-info">
+                        <strong>Cash Spin Night (R10 Spin)</strong>
+                        <span>Run the R10 Cash Spin (Win up to R100) for weekend excitement.</span>
+                      </div>
+                    </div>
+                    <div className="simple-cal-item">
+                      <span className="cal-day">Saturday</span>
+                      <div className="cal-info">
+                        <strong>PS5 Tournaments</strong>
+                        <span>Host EA FC, Tekken, or Mortal Kombat competitions.</span>
+                      </div>
+                    </div>
+                    <div className="simple-cal-item">
+                      <span className="cal-day">Month-End</span>
+                      <div className="cal-info">
+                        <strong>Payday Special Event</strong>
+                        <span>Big monthly promo to bring back regular customers.</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}

@@ -2697,23 +2697,207 @@ body {
 .owner-tab-panel {
   display: flex;
   flex-direction: column;
+  gap: 0.75rem;
+}
+
+.simple-calc-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 0.65rem;
+  background: rgba(7, 13, 30, 0.7);
+  border: 1px solid rgba(0, 242, 254, 0.16);
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.simple-calc-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.simple-calc-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.simple-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem;
+}
+
+@media (max-width: 580px) {
+  .simple-summary-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.simple-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+}
+
+.simple-summary-card.highlight-green {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.simple-card-title {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.simple-card-big {
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.simple-card-sub {
+  font-size: 0.74rem;
+  color: #94a3b8;
+}
+
+.simple-shop-bill-box {
+  background: rgba(7, 13, 30, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 0.8rem 0.95rem;
+}
+
+.simple-bill-title {
+  font-size: 0.84rem;
+  font-weight: 800;
+  color: #f8fafc;
+  margin-bottom: 0.55rem;
+}
+
+.simple-bill-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.simple-bill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+.simple-bill-row.divider {
+  padding-top: 0.45rem;
+  margin-top: 0.15rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+}
+
+.simple-bill-row.total-row {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+  margin-top: 0.2rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.simple-odds-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.6rem;
+}
+
+@media (max-width: 480px) {
+  .simple-odds-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.simple-odd-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+}
+
+.odd-prize {
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.odd-chance {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.odd-desc {
+  font-size: 0.74rem;
+  color: #94a3b8;
+}
+
+.simple-note-box {
+  background: rgba(0, 242, 254, 0.08);
+  border: 1px solid rgba(0, 242, 254, 0.25);
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+}
+
+.simple-calendar-list {
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
 }
 
-.configurator-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 0.6rem;
-  background: rgba(7, 13, 30, 0.65);
-  border: 1px solid rgba(0, 242, 254, 0.18);
+.simple-cal-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
-  padding: 0.65rem;
+  padding: 0.65rem 0.85rem;
 }
 
-.owner-table-wrap {
-  overflow-x: auto;
+.cal-day {
+  min-width: 82px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  color: #00f2fe;
+  background: rgba(0, 242, 254, 0.12);
+  border: 1px solid rgba(0, 242, 254, 0.3);
+  border-radius: 6px;
+  padding: 0.25rem 0.45rem;
+  text-align: center;
 }
 
-.history-table tr.selected-row {
-  background: rgba(0, 242, 254, 0.14);
+.cal-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.cal-info strong {
+  color: #f8fafc;
+  font-size: 0.84rem;
 }
