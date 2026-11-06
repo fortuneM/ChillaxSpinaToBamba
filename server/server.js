@@ -478,6 +478,15 @@ app.get('/api/sessions/:id/reserve-ledger', requireHostAuth, (req, res) => {
   res.json(result);
 });
 
+// GET /api/sessions/:id/daily-profit-guard: Retrieve live Daily Collections & 30%+ Profit-Guard telemetry
+app.get('/api/sessions/:id/daily-profit-guard', (req, res) => {
+  const guard = engine.getDailyProfitGuard(req.params.id);
+  if (!guard) {
+    return res.status(404).json({ success: false, error: 'Session not found.' });
+  }
+  res.json({ success: true, dailyProfitGuard: guard });
+});
+
 // POST /api/sessions/:id/sync-sales-report: Push all logged Spin & Win entries to Chillax Gaming App sales reports
 app.post('/api/sessions/:id/sync-sales-report', requireHostAuth, async (req, res) => {
   try {

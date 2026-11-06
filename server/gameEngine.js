@@ -41,6 +41,7 @@ export const DEFAULT_FINANCIAL_SETTINGS = {
   tradingDaysPerMonth: 26,
   proposedSpinPrice: 10,
   targetUptakePct: 50,
+  targetProfitMarginPct: 30,
   monthlyReserveLimit: 1000,
   weeklyExposureLimit: 250,
   dailyExposureLimit: 50,
@@ -296,6 +297,17 @@ export function normalizeWheelNumber(val) {
   return s;
 }
 
+// Format a date/timestamp into the shop's South African trading day (YYYY-MM-DD in Africa/Johannesburg)
+export function getTradingDateString(isoOrDate = new Date()) {
+  try {
+    const d = isoOrDate ? new Date(isoOrDate) : new Date();
+    if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg' }).format(d);
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
 export class GameEngine {
   constructor(io) {
     this.io = io;
@@ -342,9 +354,9 @@ export class GameEngine {
     if (row) syncRecordToMongo('entries', row);
   }
 
-  // Compute real-time house treasury, ring-fenced R1,000 cash reserve, exposure limits & owner dashboard telemetry
+  // Compute real-time house treasury, ring-fenced R1,000 cash reserve, exposure limits & Daily 30%+ Profit-Guard telemetry
   getHouseCashStats(sessionId, excludeRoundId = null) {
-    const sessionRow = db.prepare('SELECT settings_json FROM sessions WHERE id = ?').get(sessionId);
+    const sessionRow = db.prepare('SELECT short_code, settings_json FROM sessions WHERE id = ?').get(sessionId);
     let sessionSettings = {};
     if (sessionRow?.settings_json) {
       try {
@@ -365,7 +377,8 @@ export class GameEngine {
     `).all(sessionId);
 
     const now = new Date();
-    const todayPrefix = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const todayPrefix = now.toISOString().slice(0, 10); // UTC YYYY-MM-DD
+    const todaySast = getTradingDateString(now);        // Africa/Johannesburg YYYY-MM-DD
     const monthPrefix = now.toISOString().slice(0, 7);  // YYYY-MM
     const sevenDaysAgoMs = now.getTime() - (7 * 24 * 60 * 60 * 1000);
 
@@ -373,7 +386,11 @@ export class GameEngine {
     let historicalPaidOut = 0; // Total committed cash winnings (paid + unredeemed)
     let settledCashPaid = 0;   // Redeemed cash prizes
     let outstandingCashLiabilities = 0; // Unredeemed winnings (Section 3: liability until collected)
+    let dailyCollectedSettled = 0;
     let dailyCommittedCash = 0;
+    let dailyRoundsCount = 0;
+    let dailyEntriesCount = 0;
+    let dailyWinnersCount = 0;
     let weeklyCommittedCash = 0;
     let monthlyCommittedCash = 0;
     let consecutiveNoWinners = 0;
@@ -388,8 +405,18 @@ export class GameEngine {
         FROM entries
         WHERE round_id = ? AND status = 'ACTIVE'
       `).get(r.id);
-      historicalCollected += Number(roundBets?.total || 0);
-      totalSpinEntries += Number(roundBets?.cnt || 0);
+      const roundCollected = Number(roundBets?.total || 0);
+      const roundEntryCount = Number(roundBets?.cnt || 0);
+      historicalCollected += roundCollected;
+      totalSpinEntries += roundEntryCount;
+
+      const roundTimestamp = r.result_at || r.started_at || now.toISOString();
+      const isToday = roundTimestamp.startsWith(todayPrefix) || getTradingDateString(roundTimestamp) === todaySast;
+      if (isToday) {
+        dailyCollectedSettled += roundCollected;
+        dailyRoundsCount += 1;
+        dailyEntriesCount += roundEntryCount;
+      }
 
       if (r.winning_entry_id) {
         streakCounting = false;
@@ -405,9 +432,9 @@ export class GameEngine {
             outstandingCashLiabilities += payout;
           }
 
-          const roundTimestamp = r.result_at || r.started_at || now.toISOString();
-          if (roundTimestamp.startsWith(todayPrefix)) {
+          if (isToday) {
             dailyCommittedCash += payout;
+            dailyWinnersCount += 1;
           }
           if (roundTimestamp.startsWith(monthPrefix)) {
             monthlyCommittedCash += payout;
@@ -420,6 +447,24 @@ export class GameEngine {
       } else if (streakCounting) {
         consecutiveNoWinners += 1;
       }
+    }
+
+    // Include active stakes in the current open/closed round when computing live daily collections
+    let currentRoundBets = 0;
+    let currentRoundEntriesCount = 0;
+    const openRound = db.prepare(`
+      SELECT id FROM rounds
+      WHERE session_id = ? AND status IN ('REGISTRATION_OPEN', 'REGISTRATION_CLOSED')
+      ORDER BY round_number DESC LIMIT 1
+    `).get(sessionId);
+    if (openRound && (!excludeRoundId || openRound.id !== excludeRoundId)) {
+      const openRow = db.prepare(`
+        SELECT COALESCE(SUM(bet_amount), 0) as total, COUNT(*) as cnt
+        FROM entries
+        WHERE round_id = ? AND status = 'ACTIVE'
+      `).get(openRound.id);
+      currentRoundBets = Number(openRow?.total || 0);
+      currentRoundEntriesCount = Number(openRow?.cnt || 0);
     }
 
     // Customer & Repeat Participation Analytics (Section 8)
@@ -468,14 +513,66 @@ export class GameEngine {
       (cleanCollected - cleanCommitted - nonCashPrizeCosts - operatorShareAmount - paymentFeesAmount - otherDirectCosts) * 100
     ) / 100;
 
-    // Legacy 25% Profit-Guard metrics for 1.5x/2x/3x Cash Multiplier compatibility
-    const targetProfitRatio = 0.25;
+    // 30%+ Profit-Guard Engine (Default 30% minimum profit floor, configurable 20%–60%)
+    const targetProfitMarginPct = Math.min(60, Math.max(20, Number(finSettings.targetProfitMarginPct ?? finSettings.targetMarginPct) || 30));
+    const targetProfitRatio = targetProfitMarginPct / 100;
     const netProfit = Math.round((cleanCollected - cleanCommitted) * 100) / 100;
     const protectedProfitFloor = Math.round((cleanCollected * targetProfitRatio) * 100) / 100;
     const surplusReserve = Math.max(0, Math.round((netProfit - protectedProfitFloor) * 100) / 100);
     const profitMarginPct = cleanCollected > 0
       ? Math.round((netProfit / cleanCollected) * 100)
       : 100;
+
+    // Daily Collections & 30%+ Profit Guard Metrics (Shop keeps >= targetProfitMarginPct% of collected money first)
+    const collectedToday = Math.round((dailyCollectedSettled + currentRoundBets) * 100) / 100;
+    const prizesToday = Math.round(dailyCommittedCash * 100) / 100;
+    const profitToday = Math.round((collectedToday - prizesToday) * 100) / 100;
+    const dailyMarginPct = collectedToday > 0
+      ? Math.round((profitToday / collectedToday) * 100)
+      : 100;
+    const dailyRequiredProfitFloor = Math.round((collectedToday * targetProfitRatio) * 100) / 100;
+    const dailyMaxPrizePool = Math.max(0, Math.round((collectedToday - dailyRequiredProfitFloor) * 100) / 100);
+    const prizeBudgetLeft = Math.max(0, Math.round((dailyMaxPrizePool - prizesToday) * 100) / 100);
+    const maxPrizeThisRound = Math.max(
+      0,
+      Math.floor(Math.min(prizeBudgetLeft, maxSingleCashPrize, monthlyReserveRemaining) * 100) / 100
+    );
+    const unlockedWeightedTiers = [10, 20, 50, 100].filter((t) => t <= maxPrizeThisRound);
+    const unlockedMultipliers = [1.5, 2, 3].filter((m) => (5 * m) <= maxPrizeThisRound);
+    const maxWinnerShareRatio = Math.max(0.1, 1 - targetProfitRatio);
+    const amountNeededForNextWinner = maxPrizeThisRound >= 10
+      ? 0
+      : Math.max(5, Math.ceil((10 + prizesToday - (maxWinnerShareRatio * collectedToday)) / maxWinnerShareRatio));
+    const dailyGuardStatus = maxPrizeThisRound < 10
+      ? (prizesToday > 0 ? 'PAUSED' : 'BUILDING_PROFIT')
+      : (dailyMarginPct >= 40 ? 'HEALTHY' : 'WATCH');
+
+    const dailyProfitGuard = {
+      tradingDate: todaySast,
+      shopCode: sessionSettings.shopCode || sessionRow?.short_code || 'CHX',
+      collectedToday,
+      settledCollectedToday: Math.round(dailyCollectedSettled * 100) / 100,
+      currentRoundCollected: Math.round(currentRoundBets * 100) / 100,
+      prizesToday,
+      profitToday,
+      marginPct: dailyMarginPct,
+      targetMarginPct: targetProfitMarginPct,
+      maxWinnerPoolPct: Math.round((100 - targetProfitMarginPct) * 100) / 100,
+      requiredProfitFloor: dailyRequiredProfitFloor,
+      maxPrizePoolToday: dailyMaxPrizePool,
+      prizeBudgetLeft,
+      maxPrizeThisRound,
+      unlockedWeightedTiers,
+      unlockedMultipliers,
+      canMakeCashWinner: maxPrizeThisRound >= 7.5,
+      canMakeR10Winner: maxPrizeThisRound >= 10,
+      amountNeededForNextWinner,
+      roundsToday: dailyRoundsCount,
+      entriesToday: dailyEntriesCount + currentRoundEntriesCount,
+      winnersToday: dailyWinnersCount,
+      status: dailyGuardStatus,
+      ruleSummary: `Shop locks ${targetProfitMarginPct}% profit from today's collections first (${100 - targetProfitMarginPct}% max winner pool).`
+    };
 
     return {
       historicalCollected: cleanCollected,
@@ -484,8 +581,17 @@ export class GameEngine {
       outstandingCashLiabilities: Math.round(outstandingCashLiabilities * 100) / 100,
       totalCommittedCash: cleanCommitted,
       committedCashTotal: cleanCommitted,
-      dailyCommittedCash: Math.round(dailyCommittedCash * 100) / 100,
-      dailyCashCommitted: Math.round(dailyCommittedCash * 100) / 100,
+      dailyCollectedSettled: Math.round(dailyCollectedSettled * 100) / 100,
+      collectedToday,
+      prizesToday,
+      profitToday,
+      dailyMarginPct,
+      targetProfitMarginPct,
+      prizeBudgetLeft,
+      maxPrizeThisRound,
+      dailyProfitGuard,
+      dailyCommittedCash: prizesToday,
+      dailyCashCommitted: prizesToday,
       weeklyCommittedCash: Math.round(weeklyCommittedCash * 100) / 100,
       weeklyCashCommitted: Math.round(weeklyCommittedCash * 100) / 100,
       monthlyCommittedCash: Math.round(monthlyCommittedCash * 100) / 100,
@@ -512,7 +618,7 @@ export class GameEngine {
       surplusReserve,
       profitMarginPct,
       consecutiveNoWinners,
-      is3xReady: surplusReserve >= 15 && monthlyReserveRemaining >= 30,
+      is3xReady: prizeBudgetLeft >= 15 && surplusReserve >= 15 && monthlyReserveRemaining >= 30,
       // Section 8 Essential Owner Dashboard figures
       totalSpinEntries,
       uniquePlayers,
@@ -549,20 +655,89 @@ export class GameEngine {
     };
   }
 
+  // Retrieve live Daily 30%+ Profit-Guard telemetry for a session
+  getDailyProfitGuard(sessionId) {
+    const stats = this.getHouseCashStats(sessionId);
+    return stats.dailyProfitGuard;
+  }
+
+  // Persist & sync daily collections and profit snapshot to SQLite and chillaxgaminghub
+  saveDailyProfitReport(sessionId) {
+    const guard = this.getDailyProfitGuard(sessionId);
+    if (!guard) return null;
+    const reportId = `dpr_${sessionId}_${guard.tradingDate}`;
+    const now = new Date().toISOString();
+    try {
+      db.prepare(`
+        INSERT INTO daily_profit_reports (
+          id, session_id, shop_code, trading_date,
+          collected_amount, prizes_amount, profit_amount,
+          margin_pct, target_margin_pct, prize_budget_left,
+          rounds_count, entries_count, winners_count, status, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          collected_amount = excluded.collected_amount,
+          prizes_amount = excluded.prizes_amount,
+          profit_amount = excluded.profit_amount,
+          margin_pct = excluded.margin_pct,
+          target_margin_pct = excluded.target_margin_pct,
+          prize_budget_left = excluded.prize_budget_left,
+          rounds_count = excluded.rounds_count,
+          entries_count = excluded.entries_count,
+          winners_count = excluded.winners_count,
+          status = excluded.status,
+          updated_at = excluded.updated_at
+      `).run(
+        reportId,
+        sessionId,
+        guard.shopCode || 'CHX',
+        guard.tradingDate,
+        guard.collectedToday,
+        guard.prizesToday,
+        guard.profitToday,
+        guard.marginPct,
+        guard.targetMarginPct,
+        guard.prizeBudgetLeft,
+        guard.roundsToday,
+        guard.entriesToday,
+        guard.winnersToday,
+        guard.status,
+        now
+      );
+      const row = db.prepare('SELECT * FROM daily_profit_reports WHERE id = ?').get(reportId);
+      if (row) syncRecordToMongo('daily_profit_reports', row);
+      return row;
+    } catch {
+      return null;
+    }
+  }
+
   // Section 2 & 3 of Launch Plan: Weighted Cash-Prize Engine (R10 @ 4%, R20 @ 0.5%, R50 @ 0.1%, R100 @ 0.025%)
-  // Total Win Probability = 4.625% (185 / 4,000) | Expected Cash Payout = R0.575 per R10 spin
+  // Protected by Daily 30%+ Profit Guard: winners are only unlocked when daily & cumulative profit stays >= targetMarginPct (30%+)
   selectWeightedCashOutcome({ session, currentRound, entries, winnerMode }) {
+    const roundPool = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
     const stats = this.getHouseCashStats(session.id, currentRound.id);
     const allWheelNums = this.getWheelNumbers(session);
     const claimedMap = new Map(entries.map(e => [normalizeWheelNumber(e.number), e]));
     const unclaimedNums = allWheelNums.filter(n => !claimedMap.has(normalizeWheelNumber(n)));
 
-    // Maximum allowed single cash prize bounded by remaining monthly reserve and R100 individual cap
-    const maxCap = Math.min(stats.monthlyReserveRemaining, stats.maxSingleCashPrize || 100);
+    const targetProfitRatio = Math.max(0.20, (Number(stats.targetProfitMarginPct) || 30) / 100);
+    const dailyInflow = (stats.dailyCollectedSettled || 0) + roundPool;
+    const dailyProfitFloor = dailyInflow * targetProfitRatio;
+    const dailyAllowedPayout = Math.max(0, Math.floor(((dailyInflow - stats.dailyCommittedCash) - dailyProfitFloor) * 100) / 100);
 
-    // Helper: map a ticket in [0, 4000) to its cash prize tier (or 0 if >= 185)
-    const resolveTierFromRoll = (roll, betAmount = 10) => {
-      if (roll >= 185 || maxCap < 10) return { amount: 0, tierLabel: null };
+    const totalInflow = stats.historicalCollected + roundPool;
+    const cumulativeProfitFloor = totalInflow * targetProfitRatio;
+    const cumulativeAllowedPayout = Math.max(0, Math.floor(((totalInflow - stats.historicalPaidOut) - cumulativeProfitFloor) * 100) / 100);
+
+    // Maximum allowed single cash prize bounded by monthly reserve, R100 cap, AND Daily 30%+ Profit Guard
+    const reserveCap = Math.min(stats.monthlyReserveRemaining, stats.maxSingleCashPrize || 100);
+    const profitProtectedCap = Math.min(reserveCap, dailyAllowedPayout, cumulativeAllowedPayout);
+
+    // Helper: map a ticket in [0, 4000) to its cash prize tier (or 0 if >= 185 or above cap)
+    const resolveTierFromRoll = (roll, betAmount = 10, activeCap = profitProtectedCap) => {
+      if (roll >= 185 || activeCap < 10) return { amount: 0, tierLabel: null };
       const scale = Math.max(0.5, Math.min(2, (Number(betAmount) || 10) / 10));
       let rawPrize = 10;
       let oddsLabel = '1 in 25';
@@ -581,54 +756,60 @@ export class GameEngine {
       }
 
       const scaledPrize = Math.min(100, Math.round(rawPrize * scale));
-      // Clamp to available ring-fenced cash reserve
-      const affordableTiers = [100, 50, 20, 10].filter(t => t <= maxCap && t <= scaledPrize);
+      // Clamp strictly to unlocked profit-protected prize tiers
+      const affordableTiers = [100, 50, 20, 10].filter(t => t <= activeCap && t <= scaledPrize);
       if (affordableTiers.length === 0) {
-        if (maxCap >= 5 && scaledPrize >= 5) {
-          return { amount: Math.min(scaledPrize, maxCap), tierLabel: `R${Math.min(scaledPrize, maxCap)} Cash (${oddsLabel})` };
-        }
         return { amount: 0, tierLabel: null };
       }
       const finalAmount = affordableTiers[0];
       return { amount: finalAmount, tierLabel: `R${finalAmount} Cash (${oddsLabel})` };
     };
 
-    if (winnerMode === 'GUARANTEED' && entries.length > 0 && maxCap >= 5) {
-      const chosenEntry = entries[crypto.randomInt(0, entries.length)];
-      const winningRoll = crypto.randomInt(0, 185); // Roll exclusively within the 185 winning tickets
-      const tier = resolveTierFromRoll(winningRoll, chosenEntry.bet_amount);
-      const bet = Math.max(5, Number(chosenEntry.bet_amount) || 10);
-      const payout = tier.amount > 0 ? tier.amount : Math.min(10, maxCap);
-      return {
-        winningNumber: normalizeWheelNumber(chosenEntry.number),
-        winningEntry: chosenEntry,
-        appliedMultiplier: Math.round((payout / bet) * 100) / 100,
-        payoutAmount: payout,
-        prizeTierLabel: tier.tierLabel || `R${payout} Cash`
-      };
+    if (winnerMode === 'GUARANTEED' && entries.length > 0 && reserveCap >= 5) {
+      // In Guaranteed mode, enforce profitProtectedCap when >= R10; if single-entry initial spin with 0 prior prizes, allow base R10
+      const guaranteedCap = profitProtectedCap >= 10
+        ? profitProtectedCap
+        : (stats.dailyCommittedCash === 0 && dailyInflow >= 10 ? Math.min(10, reserveCap) : 0);
+
+      if (guaranteedCap >= 10) {
+        const chosenEntry = entries[crypto.randomInt(0, entries.length)];
+        const winningRoll = crypto.randomInt(0, 185);
+        const tier = resolveTierFromRoll(winningRoll, chosenEntry.bet_amount, guaranteedCap);
+        const bet = Math.max(5, Number(chosenEntry.bet_amount) || 10);
+        const payout = tier.amount > 0 ? tier.amount : Math.min(10, guaranteedCap);
+        return {
+          winningNumber: normalizeWheelNumber(chosenEntry.number),
+          winningEntry: chosenEntry,
+          appliedMultiplier: Math.round((payout / bet) * 100) / 100,
+          payoutAmount: payout,
+          prizeTierLabel: tier.tierLabel || `R${payout} Cash`
+        };
+      }
     }
 
     // Authentic Weighted Schedule (4.625% win probability per entry = 185 / 4,000)
-    // Shuffle entries so each entrant is evaluated fairly
-    const shuffledEntries = [...entries].sort(() => crypto.randomInt(0, 2) - 1);
-    for (const entry of shuffledEntries) {
-      const roll = crypto.randomInt(0, 4000);
-      if (roll < 185) {
-        const tier = resolveTierFromRoll(roll, entry.bet_amount);
-        if (tier.amount > 0) {
-          const bet = Math.max(5, Number(entry.bet_amount) || 10);
-          return {
-            winningNumber: normalizeWheelNumber(entry.number),
-            winningEntry: entry,
-            appliedMultiplier: Math.round((tier.amount / bet) * 100) / 100,
-            payoutAmount: tier.amount,
-            prizeTierLabel: tier.tierLabel
-          };
+    // Only awards a cash prize when profitProtectedCap >= 10 (ensuring shop profit stays >= 30%)
+    if (profitProtectedCap >= 10) {
+      const shuffledEntries = [...entries].sort(() => crypto.randomInt(0, 2) - 1);
+      for (const entry of shuffledEntries) {
+        const roll = crypto.randomInt(0, 4000);
+        if (roll < 185) {
+          const tier = resolveTierFromRoll(roll, entry.bet_amount, profitProtectedCap);
+          if (tier.amount > 0) {
+            const bet = Math.max(5, Number(entry.bet_amount) || 10);
+            return {
+              winningNumber: normalizeWheelNumber(entry.number),
+              winningEntry: entry,
+              appliedMultiplier: Math.round((tier.amount / bet) * 100) / 100,
+              payoutAmount: tier.amount,
+              prizeTierLabel: tier.tierLabel
+            };
+          }
         }
       }
     }
 
-    // 95.375% of spins: No cash prize won -> land on an unclaimed section on the 20-section TV wheel
+    // No cash prize won (or building 30% daily profit buffer) -> land on an unclaimed section on the wheel
     const fallbackUnclaimed = unclaimedNums.length > 0
       ? unclaimedNums[crypto.randomInt(0, unclaimedNums.length)]
       : allWheelNums[crypto.randomInt(0, allWheelNums.length)];
@@ -641,23 +822,37 @@ export class GameEngine {
     };
   }
 
-  // Sophisticated profit-protected winner & multiplier (1.5x, 2x, 3x) selection engine
+  // Daily 30%+ Profit-Protected winner & multiplier (1.5x, 2x, 3x) selection engine
+  // Ensures that whenever a winner is made, the shop is ALREADY keeping >= 30% profit from collected money
   selectSmartCashOutcome({ session, currentRound, entries, winnerMode }) {
     const roundPool = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
     const stats = this.getHouseCashStats(session.id, currentRound.id);
+    const targetProfitRatio = Math.max(0.20, (Number(stats.targetProfitMarginPct) || 30) / 100);
+
+    // 1. Cumulative 30%+ profit floor
     const totalInflow = stats.historicalCollected + roundPool;
-    const targetProfitRatio = 0.25;
-    const profitFloor = totalInflow * targetProfitRatio;
+    const cumulativeProfitFloor = totalInflow * targetProfitRatio;
+    const cumulativeMaxSafePayout = Math.max(0, (totalInflow - stats.historicalPaidOut) - cumulativeProfitFloor);
 
-    // Maximum payout that still leaves the business at or above its 25% profit floor
-    const maxSafePayout = Math.max(0, (totalInflow - stats.historicalPaidOut) - profitFloor);
-    // Maximum payout that keeps cumulative house net profit >= R0 (never in the red)
-    const maxBreakEvenPayout = Math.max(0, totalInflow - stats.historicalPaidOut);
+    // 2. Daily Collections 30%+ profit floor (Shop keeps >= 30% of today's collections first; up to 70% funds winners)
+    const dailyInflow = (stats.dailyCollectedSettled || 0) + roundPool;
+    const dailyProfitFloor = dailyInflow * targetProfitRatio;
+    const dailyMaxSafePayout = Math.max(0, (dailyInflow - stats.dailyCommittedCash) - dailyProfitFloor);
 
-    // Entries where paying 1.5x keeps the business above its 25% target profit floor
+    // Effective maximum payout that keeps BOTH today's collections AND cumulative collections at >= 30% shop profit
+    const maxSafePayout = Math.min(
+      cumulativeMaxSafePayout,
+      dailyMaxSafePayout,
+      stats.monthlyReserveRemaining,
+      stats.maxSingleCashPrize || 100
+    );
+
+    // Entries where paying 1.5x keeps the shop at or above its 30% minimum profit floor
     const safeEntries = entries.filter(e => (Number(e.bet_amount) * 1.5) <= maxSafePayout);
-    // Entries where paying 1.5x at least keeps cumulative profit >= R0
-    const breakEvenEntries = entries.filter(e => (Number(e.bet_amount) * 1.5) <= maxBreakEvenPayout);
+
+    const allWheelNums = this.getWheelNumbers(session);
+    const claimedMap = new Map(entries.map(e => [normalizeWheelNumber(e.number), e]));
+    const unclaimedNums = allWheelNums.filter(n => !claimedMap.has(normalizeWheelNumber(n)));
 
     // Helper: pick an entry weighted inversely by sqrt(bet) so smaller/safer bets win more frequently
     const pickWeightedEntry = (pool) => {
@@ -676,25 +871,20 @@ export class GameEngine {
     let winningEntry = null;
 
     if (winnerMode === 'GUARANTEED' && entries.length > 0) {
-      // Party / Guaranteed Winner mode: prioritize safe/break-even entries to protect house profit
+      // Only make a cash winner when at least one entry fits inside the 30% profit-protected budget
       if (safeEntries.length > 0) {
         winningEntry = pickWeightedEntry(safeEntries);
-      } else if (breakEvenEntries.length > 0) {
-        winningEntry = pickWeightedEntry(breakEvenEntries);
+        winningNumber = normalizeWheelNumber(winningEntry.number);
+      } else if (unclaimedNums.length > 0) {
+        // Building 30% daily profit buffer: cannot pay 1.5x yet without putting shop below 30% profit
+        winningNumber = normalizeWheelNumber(unclaimedNums[crypto.randomInt(0, unclaimedNums.length)]);
+        winningEntry = null;
       } else {
-        // Fallback if host forced guaranteed mode on a single unbuffered bet: pick lowest bet
-        const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
-        winningEntry = sortedByBet[0];
+        winningNumber = normalizeWheelNumber(allWheelNums[0]);
+        winningEntry = null;
       }
-      winningNumber = normalizeWheelNumber(winningEntry.number);
     } else {
-      // TRUE_ODDS (Hard arcade challenge: authentic random spin across ALL pockets in wheel range!)
-      // If the wheel lands on an unclaimed number, there is NO WINNER this round!
-      const allWheelNums = this.getWheelNumbers(session);
-      const claimedMap = new Map(entries.map(e => [normalizeWheelNumber(e.number), e]));
-      const unclaimedNums = allWheelNums.filter(n => !claimedMap.has(normalizeWheelNumber(n)));
-
-      // Authentic physical spin across all numbers on the wheel
+      // TRUE_ODDS (Authentic random spin across ALL pockets in wheel range, gated by 30% daily profit guard)
       const rawNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
       const rawEntry = claimedMap.get(normalizeWheelNumber(rawNumber)) || null;
 
@@ -703,35 +893,32 @@ export class GameEngine {
         winningNumber = normalizeWheelNumber(rawNumber);
         winningEntry = null;
       } else {
-        // Natural roll landed on a player's number! Check house profit guard
+        // Natural roll landed on a player's number! Verify 30%+ daily & cumulative profit guard
         const isSafe = (Number(rawEntry.bet_amount) * 1.5) <= maxSafePayout;
-        const isBreakEven = (Number(rawEntry.bet_amount) * 1.5) <= maxBreakEvenPayout;
 
-        if (isSafe || isBreakEven) {
-          // Payout is within safe / break-even limits: player legitimately wins!
+        if (isSafe) {
+          // Payout is within the 70% daily prize budget (shop keeps >= 30% profit): player wins!
           winningNumber = normalizeWheelNumber(rawNumber);
           winningEntry = rawEntry;
         } else if (unclaimedNums.length > 0) {
-          // Unaffordable whale bet landed on: protect house treasury by deflecting to an unclaimed pocket
+          // Shop has not yet collected enough today to pay 1.5x on this bet while keeping >= 30% profit
           winningNumber = normalizeWheelNumber(unclaimedNums[crypto.randomInt(0, unclaimedNums.length)]);
           winningEntry = null;
         } else {
-          // Extremely rare edge case: every number on wheel was claimed
-          const sortedByBet = [...entries].sort((a, b) => Number(a.bet_amount) - Number(b.bet_amount));
-          winningEntry = sortedByBet[0];
-          winningNumber = normalizeWheelNumber(winningEntry.number);
+          winningNumber = normalizeWheelNumber(rawNumber);
+          winningEntry = null;
         }
       }
     }
 
-    // Now select the dynamic multiplier from [1.5, 2, 3], heavily favoring 1.5x and 2x
+    // Select the dynamic multiplier from [1.5, 2, 3], strictly gated by maxSafePayout so profit stays >= 30%
     let appliedMultiplier = 0;
     if (winningEntry) {
       const bet = Math.max(5, Number(winningEntry.bet_amount) || 5);
       const cost2x = bet * 2;
       const cost3x = bet * 3;
 
-      // 2x is only eligible if paying 2x stays within maxSafePayout
+      // 2x is only eligible if paying 2x stays within maxSafePayout (keeping >= 30% shop profit)
       const canAfford2x = cost2x <= maxSafePayout;
       // 3x is strictly gated: only eligible when paying 3x stays within maxSafePayout AND leaves a healthy surplus cushion
       const canAfford3x = (cost3x <= maxSafePayout) && ((maxSafePayout - cost3x) >= Math.max(10, bet * 0.5));
@@ -743,23 +930,19 @@ export class GameEngine {
       if (canAfford3x) {
         const surplusRatio = maxSafePayout / cost3x;
         if (surplusRatio >= 2.5) {
-          // High house profit reserve: unlock a 15% shot at 3x while keeping 1.5x and 2x dominant (85%)
           weight1_5 = 57;
           weight2_0 = 28;
           weight3_0 = 15;
         } else {
-          // Moderate surplus reserve: conservative 8% shot at 3x, 92% on 1.5x / 2x
           weight1_5 = 65;
           weight2_0 = 27;
           weight3_0 = 8;
         }
       } else if (canAfford2x) {
-        // 3x locked to protect profit; distribute across lower two multipliers (72% 1.5x, 28% 2x)
         weight1_5 = 72;
         weight2_0 = 28;
         weight3_0 = 0;
       } else {
-        // Tight margin: clamp to 1.5x to protect business profit
         weight1_5 = 100;
         weight2_0 = 0;
         weight3_0 = 0;
@@ -1883,6 +2066,7 @@ export class GameEngine {
     db.prepare(`UPDATE sessions SET status = 'SPINNING' WHERE id = ?`).run(sessionId);
     this.syncRoundToMongo(currentRound.id);
     this.syncSessionToMongo(sessionId);
+    this.saveDailyProfitReport(sessionId);
 
     // Reserve Rule: Record winning cash liability immediately in the cash reserve ledger
     if (winningEntry && Number(winningEntry.payout_amount) > 0) {
@@ -2378,10 +2562,13 @@ export class GameEngine {
       ...(newSettings.otherDirectCostsMonthly !== undefined ? { otherDirectCostsMonthly: Math.max(0, Number(newSettings.otherDirectCostsMonthly) || 0) } : {}),
       ...(newSettings.monthlyCashReserve !== undefined ? { monthlyCashReserve: Math.max(100, Number(newSettings.monthlyCashReserve) || 1000) } : {}),
       ...(newSettings.weeklyExposureLimit !== undefined ? { weeklyExposureLimit: Math.max(50, Number(newSettings.weeklyExposureLimit) || 250) } : {}),
-      ...(newSettings.dailyExposureLimit !== undefined ? { dailyExposureLimit: Math.max(10, Number(newSettings.dailyExposureLimit) || 50) } : {})
+      ...(newSettings.dailyExposureLimit !== undefined ? { dailyExposureLimit: Math.max(10, Number(newSettings.dailyExposureLimit) || 50) } : {}),
+      ...(newSettings.targetProfitMarginPct !== undefined ? { targetProfitMarginPct: Math.min(60, Math.max(20, Number(newSettings.targetProfitMarginPct) || 30)) } : {}),
+      ...(newSettings.targetMarginPct !== undefined ? { targetProfitMarginPct: Math.min(60, Math.max(20, Number(newSettings.targetMarginPct) || 30)) } : {})
     };
 
     settings.financialSettings = updatedFin;
+    settings.financial = updatedFin;
     db.prepare('UPDATE sessions SET settings_json = ? WHERE id = ?').run(JSON.stringify(settings), sessionId);
     this.syncSessionToMongo(sessionId);
 
@@ -2455,7 +2642,9 @@ export class GameEngine {
   // Push & sync all logged entries to Chillax Gaming App (`chillaxgaminghub.transactions`) for sales reports
   async syncEntriesToChillaxHub(sessionId = null) {
     const result = await syncAllSessionEntriesToHub(db, sessionId);
+    let dailyReport = null;
     if (sessionId) {
+      dailyReport = this.saveDailyProfitReport(sessionId);
       logAudit(sessionId, 'HOST', 'host', 'SALES_REPORT_SYNCED', {
         entriesSynced: result.entriesSynced,
         totalSalesAmount: result.totalSalesAmount,
@@ -2463,6 +2652,6 @@ export class GameEngine {
         netSpinProfit: result.netSpinProfit
       });
     }
-    return result;
+    return { ...result, dailyReport };
   }
 }

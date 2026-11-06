@@ -327,6 +327,13 @@ export function TvView() {
                     ? 'Bet from R5 • Spin rolls 1.5x, 2x, or 3x Cash! (18+ Play Responsibly)'
                     : prize.description}
               </div>
+              {isCashRound && session.houseCashStats?.dailyProfitGuard && (
+                <div className="tv-max-prize-badge">
+                  {session.houseCashStats.dailyProfitGuard.maxPrizeThisRound >= 7.5
+                    ? `🏆 Max Cash Prize This Spin: R${Math.round(session.houseCashStats.dailyProfitGuard.maxPrizeThisRound)}`
+                    : `🔥 Prize Pot Building — Join Now to Unlock Cash Jackpot!`}
+                </div>
+              )}
             </div>
           )}
         </section>

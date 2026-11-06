@@ -345,6 +345,13 @@ export function PlayerView() {
           </div>
           <div className="prize-title">{prize.name}</div>
           <div className="prize-desc">{prize.description}</div>
+          {isCashRound && session.houseCashStats?.dailyProfitGuard && (
+            <div className="player-max-prize-badge">
+              {session.houseCashStats.dailyProfitGuard.maxPrizeThisRound >= 7.5
+                ? `🏆 Max Cash Prize This Spin: R${Math.round(session.houseCashStats.dailyProfitGuard.maxPrizeThisRound)}`
+                : `🔥 Prize Pot Building — More Players Unlock Bigger Cash Wins!`}
+            </div>
+          )}
         </div>
       )}
 

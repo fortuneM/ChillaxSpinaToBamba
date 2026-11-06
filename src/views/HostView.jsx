@@ -63,7 +63,7 @@ export function HostView() {
   const [mongoConnecting, setMongoConnecting] = useState(false);
   const [mongoFeedback, setMongoFeedback] = useState('');
   const [showProfitEngine, setShowProfitEngine] = useState(
-    () => localStorage.getItem('chillax_show_profit_engine') === 'true'
+    () => localStorage.getItem('chillax_show_profit_engine') !== 'false'
   );
   const [showOwnerModel, setShowOwnerModel] = useState(
     () => localStorage.getItem('chillax_show_owner_model') === 'true'
@@ -921,6 +921,24 @@ export function HostView() {
   const isSpinning = status === 'SPINNING';
   const isResult = status === 'RESULT';
   const stats = session.houseCashStats || {};
+  const dailyGuard = stats.dailyProfitGuard || {
+    collectedToday: stats.collectedToday ?? 0,
+    prizesToday: stats.prizesToday ?? 0,
+    profitToday: stats.profitToday ?? 0,
+    marginPct: stats.dailyMarginPct ?? 100,
+    targetMarginPct: stats.targetProfitMarginPct ?? 30,
+    requiredProfitFloor: 0,
+    prizeBudgetLeft: stats.prizeBudgetLeft ?? 0,
+    maxPrizeThisRound: stats.maxPrizeThisRound ?? 0,
+    unlockedWeightedTiers: [],
+    unlockedMultipliers: [],
+    canMakeCashWinner: (stats.maxPrizeThisRound ?? 0) >= 7.5,
+    canMakeR10Winner: (stats.maxPrizeThisRound ?? 0) >= 10,
+    amountNeededForNextWinner: 15,
+    entriesToday: 0,
+    winnersToday: 0,
+    status: 'BUILDING_PROFIT'
+  };
   const profModel = stats.profitabilityModel || null;
   const finSettings = stats.financialSettings || {};
 
@@ -1106,7 +1124,7 @@ export function HostView() {
         </div>
       )}
 
-      {/* Simplified Live Cash & R1,000 Prize Budget Card */}
+      {/* Daily Collections & 30%+ Profit-Guard Engine Card */}
       {session.houseCashStats && (
         <div className={`host-profit-engine-card ${showProfitEngine ? 'expanded' : 'collapsed'}`}>
           <div
@@ -1122,11 +1140,16 @@ export function HostView() {
             }}
           >
             <span className="profit-engine-title">
-              🏦 SMART PROFIT-GUARD ENGINE (1.5x / 2x / 3x)
+              🛡️ TODAY&apos;S COLLECTIONS &amp; {dailyGuard.targetMarginPct}%+ PROFIT GUARD
             </span>
             <div className="profit-engine-header-right">
-              <span className={`profit-3x-status ${stats.isReserveExhausted ? 'locked' : 'unlocked'}`}>
-                Budget Left: {fmtR(stats.availableCashReserve)} / {fmtR(stats.monthlyCashReserve || 1000)}
+              <span className="text-xs text-cyan font-bold">
+                Today In: {fmtR(dailyGuard.collectedToday)} • Profit: {fmtR(dailyGuard.profitToday, true)} ({dailyGuard.marginPct}%)
+              </span>
+              <span className={`profit-3x-status ${dailyGuard.canMakeCashWinner ? 'unlocked' : 'locked'}`}>
+                {dailyGuard.canMakeCashWinner
+                  ? `🟢 Max Win Now: ${fmtR(dailyGuard.maxPrizeThisRound)}`
+                  : `🔒 Need +${fmtR(dailyGuard.amountNeededForNextWinner)} to Unlock Win`}
               </span>
               <button
                 type="button"
@@ -1143,29 +1166,141 @@ export function HostView() {
           {showProfitEngine && (
             <>
               <div className="profit-metrics-grid">
-                <div className="profit-metric-box">
-                  <span className="metric-label">Money In (Spins)</span>
-                  <span className="metric-val">{fmtR(stats.historicalCollected + (session.totalBets || 0))}</span>
+                <div className="profit-metric-box" title="All paid Spin & Win stakes collected today (including current round)">
+                  <span className="metric-label">Collected Today</span>
+                  <span className="metric-val text-cyan">{fmtR(dailyGuard.collectedToday)}</span>
+                  <span className="text-xs text-muted">{dailyGuard.entriesToday || 0} entries today</span>
                 </div>
-                <div className="profit-metric-box">
-                  <span className="metric-label">Prizes Paid Out</span>
-                  <span className="metric-val">{fmtR(stats.settledCashPaid ?? stats.historicalPaidOut)}</span>
+                <div className="profit-metric-box" title="All cash prizes won today (paid + waiting to collect)">
+                  <span className="metric-label">Prizes Won Today</span>
+                  <span className="metric-val text-gold">{fmtR(dailyGuard.prizesToday)}</span>
+                  <span className="text-xs text-muted">{dailyGuard.winnersToday || 0} winners today</span>
                 </div>
-                <div className="profit-metric-box" title="Won prizes waiting to be collected at the counter">
-                  <span className="metric-label">Waiting to Collect</span>
-                  <span className="metric-val text-gold">{fmtR(stats.outstandingCashLiabilities || 0)}</span>
-                </div>
-                <div className="profit-metric-box">
-                  <span className="metric-label">Your Spin Profit</span>
-                  <span className="metric-val text-green">
-                    {fmtR((stats.netSpinContribution ?? stats.netProfit) + (session.totalBets || 0), true)}
+                <div className="profit-metric-box" title={`Shop keeps at least ${dailyGuard.targetMarginPct}% of collected money as guaranteed profit`}>
+                  <span className="metric-label">Shop Profit ({dailyGuard.marginPct}%)</span>
+                  <span className="metric-val text-green">{fmtR(dailyGuard.profitToday, true)}</span>
+                  <span className="text-xs text-muted">
+                    Protected {dailyGuard.targetMarginPct}% Floor: {fmtR(dailyGuard.requiredProfitFloor)}
                   </span>
+                </div>
+                <div className="profit-metric-box" title={`Up to ${100 - dailyGuard.targetMarginPct}% of today's collections can be paid to winners`}>
+                  <span className="metric-label">Winner Budget Left</span>
+                  <span className="metric-val text-cyan">{fmtR(dailyGuard.prizeBudgetLeft)}</span>
+                  <span className="text-xs text-muted">
+                    Max Win This Spin: <strong>{fmtR(dailyGuard.maxPrizeThisRound)}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Live Profit Margin Bar & Unlocked Tiers Status */}
+              <div className="daily-guard-status-box">
+                <div className="daily-guard-bar-header">
+                  <span className="text-xs">
+                    <strong>How It Works:</strong> Shop locks <strong>{dailyGuard.targetMarginPct}% profit</strong> ({fmtR(dailyGuard.requiredProfitFloor)}) from today&apos;s collections first. Winners are paid only from the remaining <strong>{100 - dailyGuard.targetMarginPct}% pool</strong> ({fmtR(dailyGuard.prizeBudgetLeft)} available now).
+                  </span>
+                  <div className="flex gap-1 items-center">
+                    <span className="text-xs text-muted">Min Profit Floor:</span>
+                    {[30, 35, 40, 50].map((pct) => (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => handleUpdateFinancialSettings({ targetProfitMarginPct: pct })}
+                        className={`wheel-preset-pill ${Number(dailyGuard.targetMarginPct) === pct ? 'active' : ''}`}
+                        style={{ padding: '2px 7px', fontSize: '0.7rem' }}
+                      >
+                        {pct}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Margin Progress Bar with 30% Target Marker */}
+                <div className="daily-margin-bar-track">
+                  <div
+                    className={`daily-margin-bar-fill ${dailyGuard.marginPct >= 40 ? 'healthy' : dailyGuard.marginPct >= dailyGuard.targetMarginPct ? 'watch' : 'low'}`}
+                    style={{ width: `${Math.min(100, Math.max(0, dailyGuard.marginPct))}%` }}
+                  />
+                  <div
+                    className="daily-margin-floor-marker"
+                    style={{ left: `${dailyGuard.targetMarginPct}%` }}
+                    title={`Minimum Required Shop Profit (${dailyGuard.targetMarginPct}%)`}
+                  >
+                    <span>Min {dailyGuard.targetMarginPct}%</span>
+                  </div>
+                </div>
+
+                {/* Unlocked Tiers / Multipliers for Current Spin */}
+                <div className="daily-unlocked-tiers-row">
+                  <span className="text-xs font-bold text-muted uppercase">
+                    {isWeightedCash ? '🎯 Cash Tiers This Spin:' : '💰 Multipliers This Spin (on R5+ bet):'}
+                  </span>
+                  {isWeightedCash ? (
+                    <div className="flex gap-1 flex-wrap">
+                      {[10, 20, 50, 100].map((tierAmt) => {
+                        const unlocked = tierAmt <= dailyGuard.maxPrizeThisRound;
+                        return (
+                          <span
+                            key={tierAmt}
+                            className={`guard-tier-pill ${unlocked ? 'unlocked' : 'locked'}`}
+                            title={
+                              unlocked
+                                ? `R${tierAmt} prize is unlocked (stays above ${dailyGuard.targetMarginPct}% shop profit)`
+                                : `Locked until Winner Budget Left reaches R${tierAmt}`
+                            }
+                          >
+                            {unlocked ? '🟢' : '🔒'} R{tierAmt}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="flex gap-1 flex-wrap">
+                      {[1.5, 2, 3].map((mult) => {
+                        const minBetForCheck = Math.max(5, Number(walkInBet) || 5);
+                        const neededBudget = minBetForCheck * mult;
+                        const unlocked = neededBudget <= dailyGuard.maxPrizeThisRound;
+                        return (
+                          <span
+                            key={mult}
+                            className={`guard-tier-pill ${unlocked ? 'unlocked' : 'locked'}`}
+                            title={
+                              unlocked
+                                ? `${mult}x (R${neededBudget} on R${minBetForCheck} bet) is unlocked`
+                                : `Needs R${neededBudget} in Winner Budget Left to unlock ${mult}x on a R${minBetForCheck} bet`
+                            }
+                          >
+                            {unlocked ? '🟢' : '🔒'} {mult}x (R{neededBudget})
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {!dailyGuard.canMakeR10Winner && (
+                    <div className="guard-build-notice">
+                      <span>
+                        🔒 <strong>Building {dailyGuard.targetMarginPct}% Profit Buffer:</strong> Collect <strong>+{fmtR(dailyGuard.amountNeededForNextWinner)}</strong> more in stakes to unlock the next R10+ cash winner.
+                      </span>
+                      {status === 'REGISTRATION_OPEN' && (session.totalBets || 0) === 0 && isCashRound && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const firstStd = prizes.find((p) => p.prize_type !== 'cash_multiplier' && p.prize_type !== 'weighted_cash');
+                            if (firstStd) handleChangeRoundPrize(firstStd.id);
+                          }}
+                          className="profit-toggle-btn text-cyan"
+                        >
+                          🎮 Switch to Free Promo Prize
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="reserve-controls-bar">
                 <span className="text-xs text-muted">
-                  Monthly Prize Budget Left: <strong className="text-cyan">{fmtR(stats.availableCashReserve)}</strong> of {fmtR(stats.monthlyCashReserve)} (Max single win: R100)
+                  All-Time Money In: <strong>{fmtR(stats.historicalCollected + (session.totalBets || 0))}</strong> • Waiting to Collect: <strong className="text-gold">{fmtR(stats.outstandingCashLiabilities || 0)}</strong> • Monthly Reserve Left: <strong className="text-cyan">{fmtR(stats.availableCashReserve)}</strong> / {fmtR(stats.monthlyCashReserve)}
                 </span>
                 <div className="reserve-controls-actions">
                   <button

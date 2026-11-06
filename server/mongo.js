@@ -58,6 +58,7 @@ export const SpinRound = mongoose.models.SpinRound || mongoose.model('SpinRound'
 export const SpinEntry = mongoose.models.SpinEntry || mongoose.model('SpinEntry', createCollectionSchema('spin_entries'));
 export const SpinRedemption = mongoose.models.SpinRedemption || mongoose.model('SpinRedemption', createCollectionSchema('spin_redemptions'));
 export const SpinAuditEvent = mongoose.models.SpinAuditEvent || mongoose.model('SpinAuditEvent', createCollectionSchema('spin_audit_events'));
+export const SpinDailyReport = mongoose.models.SpinDailyReport || mongoose.model('SpinDailyReport', createCollectionSchema('spin_daily_reports'));
 
 const SPIN_MODELS = {
   sessions: SpinSession,
@@ -65,7 +66,8 @@ const SPIN_MODELS = {
   rounds: SpinRound,
   entries: SpinEntry,
   redemptions: SpinRedemption,
-  audit_events: SpinAuditEvent
+  audit_events: SpinAuditEvent,
+  daily_profit_reports: SpinDailyReport
 };
 
 // In-memory cache of existing chillaxgaminghub entities (shops, tvs, users, settings)

@@ -512,7 +512,93 @@ async function runTests() {
   assert.strictEqual(syncReportRes.totalSalesAmount, 10, 'Total synced sales amount for session must equal R10');
   console.log('  ✅ Entry Logging & Chillax Gaming App Sales Report Sync passed');
 
-  console.log('\n🎉 ALL 16 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 17. Daily Collections & 30%+ Profit-Guard Engine Verification
+  console.log('Test 17: Daily Collections & 30%+ Profit-Guard Engine');
+  const guardShopCode = `CHX-${Math.floor(10000 + Math.random() * 89999)}`;
+  const guardSession = await engine.createSession({
+    numberMin: 1,
+    numberMax: 20,
+    hostPin: '1234',
+    defaultPrizeId: 'prize_weighted_cash',
+    shopCode: guardShopCode,
+    shopId: `shop_${guardShopCode}`,
+    shopName: 'Chillax Profit Guard Shop'
+  });
+
+  // Step 17a: Verify initial Daily Profit Guard state (0 collected -> building profit buffer)
+  let guard = engine.getDailyProfitGuard(guardSession.sessionId);
+  assert.strictEqual(guard.targetMarginPct, 30, 'Default minimum profit target must be 30%');
+  assert.strictEqual(guard.collectedToday, 0);
+  assert.strictEqual(guard.prizeBudgetLeft, 0);
+  assert.strictEqual(guard.canMakeR10Winner, false, 'Cannot make R10 winner when R0 has been collected');
+
+  // Step 17b: 1 player stakes R10 -> Collected = R10, 30% Shop Profit Floor = R3, 70% Winner Pool = R7 (< R10)
+  engine.claimNumber(guardSession.sessionId, {
+    number: '1',
+    playerToken: 'tok_pg_1',
+    nickname: 'PlayerOne',
+    betAmount: 10
+  });
+  guard = engine.getDailyProfitGuard(guardSession.sessionId);
+  assert.strictEqual(guard.collectedToday, 10);
+  assert.strictEqual(guard.requiredProfitFloor, 3, '30% of R10 = R3 protected profit floor');
+  assert.strictEqual(guard.prizeBudgetLeft, 7, '70% of R10 = R7 winner budget');
+  assert.strictEqual(guard.canMakeR10Winner, false, 'With only R7 in winner pool, R10 prize must remain locked in TRUE_ODDS');
+
+  // Verify TRUE_ODDS weighted cash spin never pays R10 when only R10 has been collected
+  for (let i = 0; i < 40; i++) {
+    const out = engine.selectWeightedCashOutcome({
+      session: { id: guardSession.sessionId, winner_mode: 'TRUE_ODDS', wheel_numbers_json: null },
+      currentRound: { id: guardSession.snapshot.currentRound.id },
+      entries: [{ number: '1', bet_amount: 10 }],
+      winnerMode: 'TRUE_ODDS'
+    });
+    assert.strictEqual(out.payoutAmount, 0, 'Must not pay R10 when daily winner budget is only R7');
+  }
+
+  // Step 17c: 2nd and 3rd players stake R10 -> Collected = R30, 30% Profit Floor = R9, 70% Winner Pool = R21
+  engine.claimNumber(guardSession.sessionId, {
+    number: '2',
+    playerToken: 'tok_pg_2',
+    nickname: 'PlayerTwo',
+    betAmount: 10
+  });
+  engine.claimNumber(guardSession.sessionId, {
+    number: '3',
+    playerToken: 'tok_pg_3',
+    nickname: 'PlayerThree',
+    betAmount: 10
+  });
+  guard = engine.getDailyProfitGuard(guardSession.sessionId);
+  assert.strictEqual(guard.collectedToday, 30);
+  assert.strictEqual(guard.requiredProfitFloor, 9, '30% of R30 = R9 protected profit floor');
+  assert.strictEqual(guard.prizeBudgetLeft, 21, '70% of R30 = R21 winner budget');
+  assert.strictEqual(guard.canMakeR10Winner, true, 'R10 and R20 tiers must now be unlocked');
+  assert.deepStrictEqual(guard.unlockedWeightedTiers, [10, 20], 'Only R10 and R20 fit within R21 budget');
+
+  // Step 17d: Verify Cash Multiplier mode blocks unbacked big bets (e.g., R500 bet when only R500 collected) even in GUARANTEED mode
+  const whaleOut = engine.selectSmartCashOutcome({
+    session: { id: guardSession.sessionId, winner_mode: 'GUARANTEED', wheel_numbers_json: null },
+    currentRound: { id: guardSession.snapshot.currentRound.id },
+    entries: [{ number: '10', bet_amount: 500 }],
+    winnerMode: 'GUARANTEED'
+  });
+  assert.strictEqual(whaleOut.winningEntry, null, 'Must never allow an unbacked R500 bet (R750 payout) to win and put shop in loss');
+  assert.strictEqual(whaleOut.appliedMultiplier, 0);
+
+  // Step 17e: Spin the R30 round in GUARANTEED mode -> Winner wins R10 or R20, shop keeps >= 33% profit
+  engine.setWinnerMode(guardSession.sessionId, 'GUARANTEED');
+  engine.closeRegistration(guardSession.sessionId);
+  const pgSpin = engine.spin(guardSession.sessionId, { idempotencyKey: 'pg_spin_1' });
+  assert.strictEqual(pgSpin.success, true);
+  assert.strictEqual(pgSpin.hasWinner, true);
+  assert([10, 20].includes(pgSpin.winnerPayoutAmount), `Payout must be capped to R10 or R20 (got R${pgSpin.winnerPayoutAmount})`);
+
+  const postGuard = engine.getDailyProfitGuard(guardSession.sessionId);
+  assert(postGuard.marginPct >= 30, `Shop daily profit margin must remain >= 30% after paying winner (got ${postGuard.marginPct}%)`);
+  console.log(`  ✅ Daily Collections & 30%+ Profit-Guard Engine verified (Collected: R${postGuard.collectedToday}, Prize: R${postGuard.prizesToday}, Profit: R${postGuard.profitToday} [${postGuard.marginPct}%])`);
+
+  console.log('\n🎉 ALL 17 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

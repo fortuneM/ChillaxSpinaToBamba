@@ -2901,3 +2901,134 @@ body {
   color: #f8fafc;
   font-size: 0.84rem;
 }
+
+/* Daily Collections & 30%+ Profit-Guard Engine Styles */
+.daily-guard-status-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  background: rgba(7, 13, 30, 0.72);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 10px;
+  padding: 0.65rem 0.8rem;
+  margin-bottom: 0.55rem;
+}
+
+.daily-guard-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: #cbd5e1;
+}
+
+.daily-margin-bar-track {
+  position: relative;
+  height: 12px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  overflow: visible;
+  margin: 0.25rem 0 0.6rem;
+}
+
+.daily-margin-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.daily-margin-bar-fill.healthy {
+  background: linear-gradient(90deg, #10b981, #34d399);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+}
+
+.daily-margin-bar-fill.watch {
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.4);
+}
+
+.daily-margin-bar-fill.low {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+}
+
+.daily-margin-floor-marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: #00f2fe;
+  box-shadow: 0 0 6px #00f2fe;
+}
+
+.daily-margin-floor-marker span {
+  position: absolute;
+  top: 14px;
+  left: -24px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: #00f2fe;
+  white-space: nowrap;
+}
+
+.daily-unlocked-tiers-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.2rem;
+}
+
+.guard-tier-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.guard-tier-pill.unlocked {
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  color: #34d399;
+}
+
+.guard-tier-pill.locked {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #64748b;
+}
+
+.guard-build-notice {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.76rem;
+  color: #fde68a;
+  margin-top: 0.2rem;
+}
+
+.tv-max-prize-badge,
+.player-max-prize-badge {
+  margin-top: 0.45rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #34d399;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-align: center;
+}
+

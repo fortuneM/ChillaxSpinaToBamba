@@ -242,6 +242,25 @@ db.exec(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_reserve_ledger_session ON cash_reserve_ledger(session_id);
+
+  CREATE TABLE IF NOT EXISTS daily_profit_reports (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    shop_code TEXT NOT NULL,
+    trading_date TEXT NOT NULL,
+    collected_amount REAL NOT NULL DEFAULT 0,
+    prizes_amount REAL NOT NULL DEFAULT 0,
+    profit_amount REAL NOT NULL DEFAULT 0,
+    margin_pct REAL NOT NULL DEFAULT 100,
+    target_margin_pct REAL NOT NULL DEFAULT 30,
+    prize_budget_left REAL NOT NULL DEFAULT 0,
+    rounds_count INTEGER NOT NULL DEFAULT 0,
+    entries_count INTEGER NOT NULL DEFAULT 0,
+    winners_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'HEALTHY',
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_daily_profit_session_date ON daily_profit_reports(session_id, trading_date);
 `);
 
 // Insert default prizes if not exist
