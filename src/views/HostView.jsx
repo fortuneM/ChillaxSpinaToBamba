@@ -4,7 +4,7 @@ import {
   Play, Lock, Unlock, RotateCcw, Award, CheckCircle2, 
   XCircle, History, Shield, Users, RefreshCw,
   UserPlus, Trash2, Check, Database, Eye, EyeOff,
-  Store, User, Mail, LogOut, ArrowRight
+  Store, User, Mail, LogOut, ArrowRight, Tv, Trophy
 } from 'lucide-react';
 
 export function HostView() {
@@ -289,9 +289,10 @@ export function HostView() {
       const res = await fetch('/api/prizes');
       if (res.ok) {
         const data = await res.json();
-        setPrizes(data.prizes || []);
-        if (data.prizes?.length > 0) {
-          setSelectedPrizeId(data.prizes[0].id);
+        const visiblePrizes = (data.prizes || []).filter((p) => p.id !== 'prize_weighted_cash');
+        setPrizes(visiblePrizes);
+        if (visiblePrizes.length > 0) {
+          setSelectedPrizeId(visiblePrizes[0].id);
         }
       }
     } catch {}
@@ -362,6 +363,18 @@ export function HostView() {
       socket.off('mongodb:status', handleMongoStatus);
     };
   }, [session?.sessionId]);
+
+  // Auto-switch legacy 'prize_weighted_cash' (R10 Cash Spin) to 'prize_cash_3x' (1.5x–3x Mode) when round is open
+  useEffect(() => {
+    if (
+      session?.sessionId &&
+      session?.status === 'REGISTRATION_OPEN' &&
+      (session?.totalBets || 0) === 0 &&
+      session?.currentRound?.prize?.id === 'prize_weighted_cash'
+    ) {
+      handleChangeRoundPrize('prize_cash_3x');
+    }
+  }, [session?.sessionId, session?.status, session?.currentRound?.prize?.id]);
 
   const apiRequest = async (url, method = 'POST', body = {}) => {
     setActionError('');
@@ -966,12 +979,22 @@ export function HostView() {
       {/* Top Controller Bar */}
       <div className="host-header">
         <div className="host-brand-title">
+          <Trophy size={18} className="text-gold" />
           <span className="text-cyan font-bold">{activeShopName.toUpperCase()}</span>
           <span className="host-code-badge" title="Linked Shop Code from Chillax Gaming App">
             SHOP CODE: {activeShopCode}
           </span>
         </div>
         <div className="host-header-actions">
+          <a
+            href={`/tv?code=${encodeURIComponent(activeShopCode)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="host-tv-launch-pill"
+            title="Launch Big Screen TV Arena in a new tab"
+          >
+            <Tv size={14} /> <span>TV Screen</span>
+          </a>
           {authUser?.username && (
             <span className="host-user-pill" title={`Logged in as ${authUser.name || authUser.username}`}>
               <User size={13} /> {authUser.username}
@@ -1071,15 +1094,13 @@ export function HostView() {
           <div className="prize-indicator" style={{ background: prize.color || '#00f2fe' }} />
           <div className="prize-info">
             <div className="prize-label">
-              {isWeightedCash
-                ? '🎯 R10 CASH SPIN (WIN R10, R20, R50 OR R100)'
-                : isCashRound
-                  ? '💰 CASH MULTIPLIER (WIN 1.5X, 2X OR 3X)'
-                  : '🎁 CURRENT ROUND PRIZE'}
+              {isCashRound
+                ? '💰 CASH MULTIPLIER (WIN 1.5X, 2X OR 3X)'
+                : '🎁 CURRENT ROUND PRIZE'}
             </div>
             {status === 'REGISTRATION_OPEN' ? (
               <select
-                value={prize.id}
+                value={prize.id === 'prize_weighted_cash' ? 'prize_cash_3x' : prize.id}
                 onChange={(e) => handleChangeRoundPrize(e.target.value)}
                 className="host-inline-prize-select"
               >
@@ -1097,32 +1118,183 @@ export function HostView() {
             <div className="flex gap-1 flex-wrap">
               <button
                 type="button"
-                onClick={() => handleChangeRoundPrize('prize_weighted_cash')}
-                className={`host-cash-mode-btn ${isWeightedCash ? 'active' : ''}`}
-                title="R10 Cash Spin (Win R10, R20, R50, or R100)"
-              >
-                🎯 R10 Cash Spin
-              </button>
-              <button
-                type="button"
                 onClick={() => {
-                  if (prize.prize_type === 'cash_multiplier') {
+                  if (prize.prize_type === 'cash_multiplier' || prize.prize_type === 'weighted_cash') {
                     const firstStd = prizes.find((p) => p.prize_type !== 'cash_multiplier' && p.prize_type !== 'weighted_cash');
                     if (firstStd) handleChangeRoundPrize(firstStd.id);
                   } else {
                     handleChangeRoundPrize('prize_cash_3x');
                   }
                 }}
-                className={`host-cash-mode-btn ${prize.prize_type === 'cash_multiplier' ? 'active' : ''}`}
+                className={`host-cash-mode-btn ${isCashRound ? 'active' : ''}`}
                 title="1.5x / 2x / 3x Cash Multiplier"
               >
-                {prize.prize_type === 'cash_multiplier' ? '💰 1.5x–3x ON' : '💰 1.5x–3x Mode'}
+                {isCashRound ? '💰 1.5x–3x ON' : '💰 1.5x–3x Mode'}
               </button>
             </div>
           )}
           <Award size={24} style={{ color: prize.color || '#00f2fe' }} />
         </div>
       )}
+
+      {/* MAIN ACTION BAR: The SPIN Button & Winner Result Deck */}
+      <div className="host-primary-action-area">
+        {status === 'REGISTRATION_OPEN' && (
+          <div className="host-reg-controls">
+            <button
+              onClick={handleCloseRegistration}
+              disabled={session.playerCount === 0}
+              className="arcade-btn-warning w-full"
+            >
+              <Lock size={20} className="inline-icon" />
+              Lock Entries &amp; Prepare Spin ({session.playerCount} Joined)
+            </button>
+            {session.playerCount === 0 && (
+              <p className="host-note">Waiting for at least 1 player to claim a number.</p>
+            )}
+          </div>
+        )}
+
+        {status === 'REGISTRATION_CLOSED' && (
+          <div className="host-spin-controls">
+            <button
+              onClick={handleSpinNow}
+              disabled={!canSpin || isSpinning}
+              className={`spin-now-btn ${canSpin ? 'pulse-btn' : 'disabled'}`}
+            >
+              <Play size={28} className="spin-icon" fill="currentColor" />
+              SPIN NOW!
+            </button>
+            <div className="host-sub-action-row">
+              <button onClick={handleReopenRegistration} className="sub-btn">
+                <Unlock size={14} className="inline-icon" /> Re-open Entries
+              </button>
+              <button onClick={handleCancelRound} className="sub-btn text-danger">
+                <XCircle size={14} className="inline-icon" /> Cancel &amp; Refund Round
+              </button>
+            </div>
+          </div>
+        )}
+
+        {isSpinning && (
+          <div className="host-spinning-banner">
+            <RefreshCw size={24} className="icon-spin text-cyan" />
+            <span>Wheel is spinning on TV... Stand by!</span>
+          </div>
+        )}
+
+        {isResult && (
+          <div className="host-result-actions-card">
+            {currentRound?.hasWinner || session.entries?.some(e => e.number === currentRound?.winningNumber) ? (
+              <>
+                {(() => {
+                  const winningEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
+                  const isHostEntry = winningEntry?.player_token?.startsWith('host_pick_');
+                  const winBet = Number(winningEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
+                  const winPayout = Number(winningEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
+                  const redCode = currentRound?.redemptionCode;
+                  const winTxId = winningEntry?.tx_id || currentRound?.winnerTxId;
+                  return (
+                    <div className="result-announcement">
+                      <span className="result-num-pill">#{currentRound.winningNumber}</span>
+                      <div className="result-details">
+                        <strong>
+                          👑 WINNER: {winningEntry?.nickname || 'Player'}
+                          {isHostEntry && <span className="host-pick-tag ml-2">HOST PICK</span>}
+                        </strong>
+                        {isCashRound && winPayout > 0 ? (
+                          <span className="text-green font-bold">
+                            💰 PAYOUT: R{winPayout} CASH ({currentRound?.prizeTierLabel || `${currentRound?.appliedMultiplier || 1.5}x`} on R{winBet} stake)
+                          </span>
+                        ) : (
+                          <span>Prize: {prize?.name}</span>
+                        )}
+                        {(redCode || winTxId) && (
+                          <span className="text-xs text-cyan block mt-1">
+                            {redCode && <>Redemption Code: <strong>{redCode}</strong> </>}
+                            {winTxId && <>• Tx: <code>{winTxId}</code></>}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Prize Redemption Button */}
+                <div className="host-redemption-box">
+                  <input
+                    type="text"
+                    placeholder={`Verify Redemption Code ${currentRound?.redemptionCode || ''} / cashier notes`}
+                    value={redeemNotes}
+                    onChange={(e) => setRedeemNotes(e.target.value)}
+                    className="redeem-notes-input"
+                  />
+                  <button onClick={handleRedeemPrize} className="arcade-btn-success w-full">
+                    <CheckCircle2 size={18} className="inline-icon" /> Mark Prize as Redeemed ({currentRound?.redemptionCode || 'Verified'})
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="result-announcement">
+                <span className="result-num-pill" style={{ background: '#ef4444', color: '#fff' }}>
+                  #{currentRound.winningNumber}
+                </span>
+                <div className="result-details">
+                  <strong className="text-danger">NO WINNER THIS ROUND</strong>
+                  <span className="text-muted">Landed on unclaimed number #{currentRound.winningNumber}. House retains stakes!</span>
+                </div>
+              </div>
+            )}
+
+            {/* Next Round */}
+            <div className="host-next-round-section">
+              <label className="text-muted text-sm block mb-1">Select Next Round Prize:</label>
+              <select
+                value={selectedPrizeId}
+                onChange={(e) => setSelectedPrizeId(e.target.value)}
+                className="host-select mb-2"
+              >
+                {prizes.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.value})
+                  </option>
+                ))}
+              </select>
+
+              {/* Wheel Numbers Option for Next Round */}
+              <div className="next-round-wheel-config mb-3">
+                <label className="text-muted text-xs block mb-1 uppercase font-bold">
+                  🎡 Choose Wheel Numbers for Round #{ (currentRound?.roundNumber || 1) + 1 }:
+                </label>
+                <div className="wheel-presets-row">
+                  {[10, 15, 20, 30].map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      onClick={() => setNextRoundNumberMax(count)}
+                      className={`wheel-preset-pill ${nextRoundNumberMax === count ? 'active' : ''}`}
+                    >
+                      {count} Numbers
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setNextRoundHasDoubleZero((prev) => !prev)}
+                    className={`wheel-zero-toggle-btn ${nextRoundHasDoubleZero ? 'active' : ''}`}
+                    title="Toggle 2 Zeros (0 & 00)"
+                  >
+                    {nextRoundHasDoubleZero ? '🟢 2 Zeros (0 & 00) ON' : '⚪ 2 Zeros OFF'}
+                  </button>
+                </div>
+              </div>
+
+              <button onClick={handleNextRound} className="arcade-btn-primary w-full">
+                <RotateCcw size={18} className="inline-icon" /> Start Round #{ (currentRound?.roundNumber || 1) + 1 }
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Daily Collections & 30%+ Profit-Guard Engine Card */}
       {session.houseCashStats && (
@@ -1229,52 +1401,31 @@ export function HostView() {
                   </div>
                 </div>
 
-                {/* Unlocked Tiers / Multipliers for Current Spin */}
+                {/* Unlocked Multipliers for Current Spin */}
                 <div className="daily-unlocked-tiers-row">
                   <span className="text-xs font-bold text-muted uppercase">
-                    {isWeightedCash ? '🎯 Cash Tiers This Spin:' : '💰 Multipliers This Spin (on R5+ bet):'}
+                    💰 Multipliers This Spin (on R{Math.max(5, Number(walkInBet) || 5)} bet):
                   </span>
-                  {isWeightedCash ? (
-                    <div className="flex gap-1 flex-wrap">
-                      {[10, 20, 50, 100].map((tierAmt) => {
-                        const unlocked = tierAmt <= dailyGuard.maxPrizeThisRound;
-                        return (
-                          <span
-                            key={tierAmt}
-                            className={`guard-tier-pill ${unlocked ? 'unlocked' : 'locked'}`}
-                            title={
-                              unlocked
-                                ? `R${tierAmt} prize is unlocked (stays above ${dailyGuard.targetMarginPct}% shop profit)`
-                                : `Locked until Winner Budget Left reaches R${tierAmt}`
-                            }
-                          >
-                            {unlocked ? '🟢' : '🔒'} R{tierAmt}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="flex gap-1 flex-wrap">
-                      {[1.5, 2, 3].map((mult) => {
-                        const minBetForCheck = Math.max(5, Number(walkInBet) || 5);
-                        const neededBudget = minBetForCheck * mult;
-                        const unlocked = neededBudget <= dailyGuard.maxPrizeThisRound;
-                        return (
-                          <span
-                            key={mult}
-                            className={`guard-tier-pill ${unlocked ? 'unlocked' : 'locked'}`}
-                            title={
-                              unlocked
-                                ? `${mult}x (R${neededBudget} on R${minBetForCheck} bet) is unlocked`
-                                : `Needs R${neededBudget} in Winner Budget Left to unlock ${mult}x on a R${minBetForCheck} bet`
-                            }
-                          >
-                            {unlocked ? '🟢' : '🔒'} {mult}x (R{neededBudget})
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
+                  <div className="flex gap-1 flex-wrap">
+                    {[1.5, 2, 3].map((mult) => {
+                      const minBetForCheck = Math.max(5, Number(walkInBet) || 5);
+                      const neededBudget = minBetForCheck * mult;
+                      const unlocked = neededBudget <= dailyGuard.maxPrizeThisRound;
+                      return (
+                        <span
+                          key={mult}
+                          className={`guard-tier-pill ${unlocked ? 'unlocked' : 'locked'}`}
+                          title={
+                            unlocked
+                              ? `${mult}x (R${neededBudget} on R${minBetForCheck} bet) is unlocked`
+                              : `Needs R${neededBudget} in Winner Budget Left to unlock ${mult}x on a R${minBetForCheck} bet`
+                          }
+                        >
+                          {unlocked ? '🟢' : '🔒'} {mult}x (R{neededBudget})
+                        </span>
+                      );
+                    })}
+                  </div>
 
                   {!dailyGuard.canMakeR10Winner && (
                     <div className="guard-build-notice">
@@ -1493,30 +1644,24 @@ export function HostView() {
                     </div>
                   </div>
 
-                  {/* Simple Rent & Electricity Comparison Box */}
+                  {/* Simple Monthly Shop Profit Summary (Without Rent/Power) */}
                   <div className="simple-shop-bill-box">
                     <div className="simple-bill-title">
-                      🏠 Does Spin &amp; Win Help Cover Rent &amp; Electricity?
+                      📈 Total Monthly Shop Profit (Normal Gaming + Spin &amp; Win)
                     </div>
                     <div className="simple-bill-rows">
                       <div className="simple-bill-row">
-                        <span>Normal Shop Profit ({profModel.dailyCustomers}/day × R20 × 65% margin):</span>
+                        <span>Shop WITHOUT Spin &amp; Win ({profModel.dailyCustomers}/day × R20 × 65% margin):</span>
                         <strong>{fmtR(profModel.ordinaryGrossContribution, true)} / mo</strong>
                       </div>
                       <div className="simple-bill-row">
-                        <span>Monthly Rent (R14,000) + Power (R6,500):</span>
-                        <strong className="text-danger">-{fmtR(profModel.combinedFixedLow)} / mo</strong>
-                      </div>
-                      <div className="simple-bill-row divider">
-                        <span>Shop WITHOUT Spin &amp; Win:</span>
-                        <strong className={profModel.ordinaryNetLowEnergy >= 0 ? 'text-green' : 'text-danger'}>
-                          {fmtR(profModel.ordinaryNetLowEnergy, true)} / mo
-                        </strong>
+                        <span>Extra Profit from Spin &amp; Win ({profModel.targetUptakeRatePct}% play):</span>
+                        <strong className="text-cyan">{fmtR(profModel.selectedScenario.netSpinContribution, true)} / mo</strong>
                       </div>
                       <div className="simple-bill-row total-row">
-                        <span>Shop WITH Spin &amp; Win ({profModel.targetUptakeRatePct}% play):</span>
-                        <strong className={profModel.selectedScenario.totalShopNetLowEnergy >= 0 ? 'text-green' : 'text-gold'}>
-                          {fmtR(profModel.selectedScenario.totalShopNetLowEnergy, true)} / mo
+                        <span>Total Shop Profit WITH Spin &amp; Win:</span>
+                        <strong className="text-green">
+                          {fmtR(profModel.ordinaryGrossContribution + profModel.selectedScenario.netSpinContribution, true)} / mo
                         </strong>
                       </div>
                     </div>
@@ -1567,8 +1712,8 @@ export function HostView() {
                     <div className="simple-cal-item">
                       <span className="cal-day">Friday</span>
                       <div className="cal-info">
-                        <strong>Cash Spin Night (R10 Spin)</strong>
-                        <span>Run the R10 Cash Spin (Win up to R100) for weekend excitement.</span>
+                        <strong>Cash Multiplier Night (1.5x–3x)</strong>
+                        <span>Run the 1.5x / 2x / 3x Cash Multiplier spins for weekend excitement.</span>
                       </div>
                     </div>
                     <div className="simple-cal-item">
@@ -1592,165 +1737,6 @@ export function HostView() {
           )}
         </div>
       )}
-
-      {/* MAIN ACTION BAR: The SPIN Button (Page 9) */}
-      <div className="host-primary-action-area">
-        {status === 'REGISTRATION_OPEN' && (
-          <div className="host-reg-controls">
-            <button
-              onClick={handleCloseRegistration}
-              disabled={session.playerCount === 0}
-              className="arcade-btn-warning w-full"
-            >
-              <Lock size={20} className="inline-icon" />
-              Lock Entries &amp; Prepare Spin ({session.playerCount} Joined)
-            </button>
-            {session.playerCount === 0 && (
-              <p className="host-note">Waiting for at least 1 player to claim a number.</p>
-            )}
-          </div>
-        )}
-
-        {status === 'REGISTRATION_CLOSED' && (
-          <div className="host-spin-controls">
-            <button
-              onClick={handleSpinNow}
-              disabled={!canSpin || isSpinning}
-              className={`spin-now-btn ${canSpin ? 'pulse-btn' : 'disabled'}`}
-            >
-              <Play size={28} className="spin-icon" fill="currentColor" />
-              SPIN NOW!
-            </button>
-            <div className="host-sub-action-row">
-              <button onClick={handleReopenRegistration} className="sub-btn">
-                <Unlock size={14} className="inline-icon" /> Re-open Entries
-              </button>
-              <button onClick={handleCancelRound} className="sub-btn text-danger">
-                <XCircle size={14} className="inline-icon" /> Cancel &amp; Refund Round
-              </button>
-            </div>
-          </div>
-        )}
-
-        {isSpinning && (
-          <div className="host-spinning-banner">
-            <RefreshCw size={24} className="icon-spin text-cyan" />
-            <span>Wheel is spinning on TV... Stand by!</span>
-          </div>
-        )}
-
-        {isResult && (
-          <div className="host-result-actions-card">
-            {currentRound?.hasWinner || session.entries?.some(e => e.number === currentRound?.winningNumber) ? (
-              <>
-                {(() => {
-                  const winningEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
-                  const isHostEntry = winningEntry?.player_token?.startsWith('host_pick_');
-                  const winBet = Number(winningEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
-                  const winPayout = Number(winningEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
-                  const redCode = currentRound?.redemptionCode;
-                  const winTxId = winningEntry?.tx_id || currentRound?.winnerTxId;
-                  return (
-                    <div className="result-announcement">
-                      <span className="result-num-pill">#{currentRound.winningNumber}</span>
-                      <div className="result-details">
-                        <strong>
-                          WINNER: {winningEntry?.nickname || 'Player'}
-                          {isHostEntry && <span className="host-pick-tag ml-2">HOST PICK</span>}
-                        </strong>
-                        {isCashRound && winPayout > 0 ? (
-                          <span className="text-green font-bold">
-                            💰 PAYOUT: R{winPayout} CASH ({currentRound?.prizeTierLabel || `${currentRound?.appliedMultiplier || 1.5}x`} on R{winBet} stake)
-                          </span>
-                        ) : (
-                          <span>Prize: {prize?.name}</span>
-                        )}
-                        {(redCode || winTxId) && (
-                          <span className="text-xs text-cyan block mt-1">
-                            {redCode && <>Redemption Code: <strong>{redCode}</strong> </>}
-                            {winTxId && <>• Tx: <code>{winTxId}</code></>}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {/* Prize Redemption Button (Page 10) */}
-                <div className="host-redemption-box">
-                  <input
-                    type="text"
-                    placeholder={`Verify Redemption Code ${currentRound?.redemptionCode || ''} / cashier notes`}
-                    value={redeemNotes}
-                    onChange={(e) => setRedeemNotes(e.target.value)}
-                    className="redeem-notes-input"
-                  />
-                  <button onClick={handleRedeemPrize} className="arcade-btn-success w-full">
-                    <CheckCircle2 size={18} className="inline-icon" /> Mark Prize as Redeemed ({currentRound?.redemptionCode || 'Verified'})
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="result-announcement">
-                <span className="result-num-pill" style={{ background: '#ef4444', color: '#fff' }}>
-                  #{currentRound.winningNumber}
-                </span>
-                <div className="result-details">
-                  <strong className="text-danger">NO WINNER THIS ROUND</strong>
-                  <span className="text-muted">Landed on unclaimed number #{currentRound.winningNumber}. House retains stakes!</span>
-                </div>
-              </div>
-            )}
-
-            {/* Next Round */}
-            <div className="host-next-round-section">
-              <label className="text-muted text-sm block mb-1">Select Next Round Prize:</label>
-              <select
-                value={selectedPrizeId}
-                onChange={(e) => setSelectedPrizeId(e.target.value)}
-                className="host-select mb-2"
-              >
-                {prizes.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.value})
-                  </option>
-                ))}
-              </select>
-
-              {/* Wheel Numbers Option for Next Round */}
-              <div className="next-round-wheel-config mb-3">
-                <label className="text-muted text-xs block mb-1 uppercase font-bold">
-                  🎡 Choose Wheel Numbers for Round #{ (currentRound?.roundNumber || 1) + 1 }:
-                </label>
-                <div className="wheel-presets-row">
-                  {[10, 15, 20, 30].map((count) => (
-                    <button
-                      key={count}
-                      type="button"
-                      onClick={() => setNextRoundNumberMax(count)}
-                      className={`wheel-preset-pill ${nextRoundNumberMax === count ? 'active' : ''}`}
-                    >
-                      {count} Numbers
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setNextRoundHasDoubleZero((prev) => !prev)}
-                    className={`wheel-zero-toggle-btn ${nextRoundHasDoubleZero ? 'active' : ''}`}
-                    title="Toggle 2 Zeros (0 & 00)"
-                  >
-                    {nextRoundHasDoubleZero ? '🟢 2 Zeros (0 & 00) ON' : '⚪ 2 Zeros OFF'}
-                  </button>
-                </div>
-              </div>
-
-              <button onClick={handleNextRound} className="arcade-btn-primary w-full">
-                <RotateCcw size={18} className="inline-icon" /> Start Round #{ (currentRound?.roundNumber || 1) + 1 }
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* Number Claims Grid & Walk-in Host Pick Controls */}
       <div className="host-claimed-grid-card">

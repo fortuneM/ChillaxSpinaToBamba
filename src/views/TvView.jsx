@@ -3,7 +3,7 @@ import { getSocket } from '../utils/socket';
 import { ArcadeWheel } from '../components/ArcadeWheel';
 import { sounds } from '../utils/sound';
 import confetti from 'canvas-confetti';
-import { Volume2, VolumeX, Tv, Users, Sparkles, Award } from 'lucide-react';
+import { Volume2, VolumeX, Tv, Users, Sparkles, Award, Trophy, Flame, QrCode, ShieldCheck, Zap } from 'lucide-react';
 
 export function TvView() {
   const [session, setSession] = useState(null);
@@ -23,7 +23,6 @@ export function TvView() {
     if (codeParam) {
       pairWithCode(codeParam);
     } else {
-      // Check localStorage for saved session
       const savedSessionId = localStorage.getItem('chillax_tv_session_id');
       if (savedSessionId) {
         fetchSessionState(savedSessionId);
@@ -49,17 +48,15 @@ export function TvView() {
 
   const generateQrCode = async (shortCode) => {
     try {
-      // Host URL
       const hostUrl = window.location.origin;
       const joinUrl = `${hostUrl}/join?code=${shortCode}`;
-      // Import QRCode dynamically or generate
       const QRCode = (await import('qrcode')).default;
       const dataUrl = await QRCode.toDataURL(joinUrl, {
         margin: 1,
-        width: 220,
+        width: 240,
         color: {
           dark: '#00f2fe',
-          light: '#070d1e'
+          light: '#050b18'
         }
       });
       setQrCodeUrl(dataUrl);
@@ -84,7 +81,6 @@ export function TvView() {
       setSession(data);
       localStorage.setItem('chillax_tv_session_id', data.sessionId);
 
-      // Notify server TV has paired
       await fetch(`/api/sessions/${data.sessionId}/pair-tv`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -145,22 +141,22 @@ export function TvView() {
 
   const triggerConfetti = useCallback(() => {
     try {
-      const end = Date.now() + 4500;
-      const colors = ['#00f2fe', '#8b5cf6', '#f59e0b', '#ec4899', '#ffffff'];
+      const end = Date.now() + 5000;
+      const colors = ['#00f2fe', '#8b5cf6', '#f59e0b', '#ec4899', '#10b981', '#fef08a'];
 
       (function frame() {
         confetti({
-          particleCount: 4,
+          particleCount: 5,
           angle: 60,
-          spread: 60,
-          origin: { x: 0, y: 0.7 },
+          spread: 65,
+          origin: { x: 0, y: 0.72 },
           colors
         });
         confetti({
-          particleCount: 4,
+          particleCount: 5,
           angle: 120,
-          spread: 60,
-          origin: { x: 1, y: 0.7 },
+          spread: 65,
+          origin: { x: 1, y: 0.72 },
           colors
         });
 
@@ -176,17 +172,20 @@ export function TvView() {
     setIsMuted(muted);
   };
 
-  // If TV is not yet paired with a session, display pairing splash screen
+  // If TV is not yet paired with a session, display majestic pairing splash screen
   if (!session) {
     return (
       <div className="tv-pairing-screen">
         <div className="tv-pairing-card">
+          <div className="tv-pairing-badge">
+            <Sparkles size={16} className="text-gold" /> LIVE ARENA DISPLAY
+          </div>
           <div className="tv-logo-glow">
             <span className="arcade-title">CHILLAX</span>
-            <span className="arcade-subtitle">SPIN & WIN</span>
+            <span className="arcade-subtitle">★ SPIN &amp; WIN ★</span>
           </div>
           <p className="tv-pairing-lead">
-            Welcome to the Gaming Center TV Experience. Pair this screen with the Host Controller.
+            Welcome to the Premier Gaming Lounge Arena. Enter your Shop Code to pair this big screen with the Host Controller.
           </p>
 
           <form
@@ -208,14 +207,14 @@ export function TvView() {
                 autoFocus
               />
               <button type="submit" disabled={isPairing || !pairingCodeInput} className="arcade-btn-primary">
-                {isPairing ? 'Connecting...' : 'Pair TV'}
+                {isPairing ? 'Connecting...' : 'Launch Arena'}
               </button>
             </div>
             {pairingError && <div className="tv-error-msg">{pairingError}</div>}
           </form>
 
           <div className="tv-pairing-tips">
-            <p>💡 <strong>Tip for Host:</strong> Sign in with your Chillax Gaming App account at <code>/host</code> to use your linked Shop Code.</p>
+            <p>💡 <strong>Host Setup:</strong> Sign in with your Chillax Gaming App account at <code>/host</code> to activate your Shop Code.</p>
           </div>
         </div>
       </div>
@@ -230,35 +229,55 @@ export function TvView() {
   const isResultState = status === 'RESULT' && currentRound?.winningNumber;
   const hasWinner = Boolean(currentRound?.hasWinner || currentRound?.winningEntryId);
 
+  // Ordered pockets for the Live Arena Number Board on the right column
+  const allWheelPockets = session?.wheelNumbers || [];
+  const zeros = allWheelPockets.filter((n) => n === '0' || n === '00');
+  const nonZeros = allWheelPockets.filter((n) => n !== '0' && n !== '00').sort((a, b) => Number(a) - Number(b));
+  const gridDisplayNumbers = (zeros.length > 0 || nonZeros.length > 0)
+    ? [...zeros, ...nonZeros]
+    : ['0', '00', ...Array.from({ length: (session?.numberRange?.max || 20) - (session?.numberRange?.min || 1) + 1 }, (_, i) => String((session?.numberRange?.min || 1) + i))];
+
+  const entriesList = session?.entries || [];
+
   return (
     <div className="tv-root-container">
-      {/* Top Header Bar */}
+      {/* Ambient Stage Spotlights */}
+      <div className="tv-stage-spotlights" aria-hidden="true">
+        <div className="spotlight-beam beam-left" />
+        <div className="spotlight-beam beam-right" />
+        <div className="spotlight-center-aura" />
+      </div>
+
+      {/* Top Broadcast Header Bar */}
       <header className="tv-header-bar">
         <div className="tv-brand-wrapper">
-          <span className="tv-logo-primary">CHILLAX</span>
-          <span className="tv-logo-tag">SPIN & WIN</span>
-          <span className="tv-round-pill">ROUND {currentRound?.roundNumber || 1}</span>
+          <div className="tv-brand-emblem">
+            <Trophy size={22} className="text-gold" />
+          </div>
+          <span className="tv-logo-primary">{session.shopName || 'CHILLAX'}</span>
+          <span className="tv-logo-tag">SPIN &amp; WIN</span>
+          <span className="tv-round-pill">ROUND #{currentRound?.roundNumber || 1}</span>
         </div>
 
         <div className="tv-status-badge-wrapper">
           {status === 'REGISTRATION_OPEN' && (
             <div className="tv-status-badge status-open">
-              <span className="pulse-dot green" /> ENTRIES OPEN
+              <span className="pulse-dot green" /> ENTRIES OPEN • PICK YOUR LUCKY NUMBER!
             </div>
           )}
           {status === 'REGISTRATION_CLOSED' && (
             <div className="tv-status-badge status-closed">
-              <span className="pulse-dot amber" /> ENTRIES LOCKED • READY TO SPIN
+              <span className="pulse-dot amber" /> ENTRIES LOCKED • READY TO SPIN!
             </div>
           )}
           {status === 'SPINNING' && (
             <div className="tv-status-badge status-spinning">
-              <Sparkles className="icon-spin text-cyan" /> WHEEL IS SPINNING!
+              <Sparkles size={18} className="icon-spin text-cyan inline-icon" /> WHEEL IS SPINNING!
             </div>
           )}
           {status === 'RESULT' && (
             <div className="tv-status-badge status-result">
-              <Award className="text-amber" /> WINNER ANNOUNCED!
+              <Award size={18} className="text-gold inline-icon" /> WINNER ANNOUNCED!
             </div>
           )}
           {status === 'CANCELLED' && (
@@ -269,26 +288,35 @@ export function TvView() {
         </div>
 
         <div className="tv-header-right">
+          {isCashRound && (session.totalBets || 0) > 0 && (
+            <div className="tv-pool-pill">
+              <Flame size={16} className="text-gold" />
+              <span>STAKES: <strong>R{session.totalBets}</strong></span>
+            </div>
+          )}
           <div className="tv-players-counter">
-            <Users size={22} className="text-cyan" />
-            <span><strong>{session.playerCount}</strong> PLAYERS</span>
+            <Users size={20} className="text-cyan" />
+            <span><strong>{session.playerCount}</strong> / {gridDisplayNumbers.length} CLAIMED</span>
           </div>
           <button
             onClick={handleToggleSound}
             className="tv-sound-btn"
             title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
           >
-            {isMuted ? <VolumeX size={24} className="text-muted" /> : <Volume2 size={24} className="text-cyan" />}
+            {isMuted ? <VolumeX size={22} className="text-muted" /> : <Volume2 size={22} className="text-cyan" />}
           </button>
         </div>
       </header>
 
-      {/* Main 16:9 Arena */}
+      {/* Main 3-Column 16:9 Game Show Arena */}
       <main className="tv-arena">
-        {/* Left Side: QR Code & Joining Info */}
+        {/* LEFT COLUMN: QR Join Card & Prize Spotlight */}
         <section className="tv-join-panel">
           <div className="tv-join-card">
-            <h3 className="join-panel-heading">JOIN THE GAME</h3>
+            <div className="join-card-badge">
+              <QrCode size={14} /> SCAN OR ASK HOST
+            </div>
+            <h3 className="join-panel-heading">JOIN THIS SPIN</h3>
             <div className="tv-qr-box">
               {qrCodeUrl ? (
                 <img src={qrCodeUrl} alt="Scan to join" className="tv-qr-image" />
@@ -297,48 +325,50 @@ export function TvView() {
               )}
             </div>
             <div className="tv-join-code-box">
-              <span className="code-label">SHOP CODE</span>
+              <span className="code-label">VENUE SHOP CODE</span>
               <span className="code-value">{session.shopCode || session.shortCode}</span>
             </div>
             <p className="tv-join-instruction">
-              Scan with phone camera or visit:
-              <br />
-              <strong className="text-cyan">{window.location.host}/join</strong>
+              Visit <strong className="text-cyan">{window.location.host}/join</strong> or ask the Host at the counter!
             </p>
           </div>
 
           {/* Current Round Prize Spotlight */}
           {prize && (
-            <div className="tv-prize-spotlight" style={{ borderColor: prize.color || '#00f2fe' }}>
+            <div className={`tv-prize-spotlight ${isCashRound ? 'cash-spotlight' : ''}`}>
               <div className="prize-spotlight-label">
-                {isWeightedCash
-                  ? '🎯 R10 SPIN CASH SCHEDULE (R10 • R20 • R50 • R100)'
-                  : isCashRound
-                    ? '💰 MYSTERY CASH MULTIPLIER (1.5X • 2X • 3X)'
-                    : 'ROUND PRIZE'}
+                {isCashRound ? (
+                  <><Zap size={14} className="inline-icon text-gold" /> CASH MULTIPLIER JACKPOT</>
+                ) : (
+                  <><Trophy size={14} className="inline-icon text-gold" /> FEATURED ROUND PRIZE</>
+                )}
               </div>
-              <div className="prize-spotlight-name" style={{ color: prize.color || '#00f2fe' }}>
-                {prize.name}
+              <div className="prize-spotlight-name" style={{ color: isCashRound ? '#fef08a' : (prize.color || '#00f2fe') }}>
+                {isWeightedCash ? '💰 Cash Multiplier (1.5x / 2x / 3x)' : prize.name}
               </div>
-              <div className="prize-spotlight-desc">
-                {isWeightedCash
-                  ? 'R10 Spin • Win R10, R20, R50, or R100 Cash! (18+ Play Responsibly)'
-                  : isCashRound
-                    ? 'Bet from R5 • Spin rolls 1.5x, 2x, or 3x Cash! (18+ Play Responsibly)'
-                    : prize.description}
-              </div>
+
+              {isCashRound ? (
+                <div className="tv-multiplier-pills">
+                  <span className="tv-mult-pill m-15">1.5x CASH</span>
+                  <span className="tv-mult-pill m-20">2x CASH</span>
+                  <span className="tv-mult-pill m-30">3x JACKPOT</span>
+                </div>
+              ) : (
+                <div className="prize-spotlight-desc">{prize.description}</div>
+              )}
+
               {isCashRound && session.houseCashStats?.dailyProfitGuard && (
                 <div className="tv-max-prize-badge">
                   {session.houseCashStats.dailyProfitGuard.maxPrizeThisRound >= 7.5
-                    ? `🏆 Max Cash Prize This Spin: R${Math.round(session.houseCashStats.dailyProfitGuard.maxPrizeThisRound)}`
-                    : `🔥 Prize Pot Building — Join Now to Unlock Cash Jackpot!`}
+                    ? `🏆 Max Cash Win This Spin: R${Math.round(session.houseCashStats.dailyProfitGuard.maxPrizeThisRound)}`
+                    : `🔥 Prize Pot Building — Join Now to Unlock Cash Wins!`}
                 </div>
               )}
             </div>
           )}
         </section>
 
-        {/* Center Arena: Wheel Display */}
+        {/* CENTER COLUMN: The Majestic Wheel Stage */}
         <section className="tv-wheel-stage">
           <ArcadeWheel
             wheelNumbers={session.wheelNumbers}
@@ -356,20 +386,87 @@ export function TvView() {
           {/* Wheel Status Footer */}
           <div className="tv-wheel-caption">
             {status === 'REGISTRATION_OPEN' && (
-              <p className="caption-text">
-                Pick a number on your phone or ask the Host! <span className="highlight-gold">Golden glow</span> marks claimed numbers.
-              </p>
+              <div className="caption-pill">
+                <Sparkles size={15} className="text-gold" />
+                <span className="caption-text">
+                  Claim your lucky number now! <span className="highlight-gold">Gold slices</span> are live in play!
+                </span>
+              </div>
             )}
             {status === 'REGISTRATION_CLOSED' && (
-              <p className="caption-text blink-slow">
-                All entries locked! Watch the wheel spin...
-              </p>
+              <div className="caption-pill locked">
+                <span className="caption-text blink-slow">
+                  🔒 All numbers locked! Eyes on the golden pointer...
+                </span>
+              </div>
             )}
             {status === 'SPINNING' && (
-              <p className="caption-text text-cyan pulse">
-                Suspense building... Who will take the prize?!
-              </p>
+              <div className="caption-pill spinning">
+                <span className="caption-text text-cyan">
+                  ⚡ High-speed spin in progress — Who takes the crown?!
+                </span>
+              </div>
             )}
+          </div>
+        </section>
+
+        {/* RIGHT COLUMN: Live Arena Number Board & Challengers */}
+        <section className="tv-live-board-panel">
+          <div className="tv-board-card">
+            <div className="tv-board-header">
+              <div>
+                <span className="tv-board-kicker">LIVE ARENA BOARD</span>
+                <h3 className="tv-board-title">LUCKY NUMBERS</h3>
+              </div>
+              <span className="tv-board-count">
+                {entriesList.length} / {gridDisplayNumbers.length}
+              </span>
+            </div>
+
+            {/* Compact Live Number Pocket Grid on TV */}
+            <div className="tv-pocket-grid">
+              {gridDisplayNumbers.map((num) => {
+                const entry = entriesList.find((e) => String(e.number) === String(num));
+                const isZero = String(num) === '0' || String(num) === '00';
+                const isWin = isResultState && String(currentRound?.winningNumber) === String(num);
+                return (
+                  <div
+                    key={num}
+                    className={`tv-pocket-tile ${isZero ? 'zero-tile' : ''} ${entry ? 'claimed-tile' : 'open-tile'} ${isWin ? 'winner-tile' : ''}`}
+                  >
+                    <span className="tv-tile-num">#{num}</span>
+                    <span className="tv-tile-name">
+                      {entry ? entry.nickname : 'OPEN'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Latest Players Ticker */}
+            <div className="tv-recent-players">
+              <div className="tv-recent-header">
+                <Users size={13} className="text-cyan" />
+                <span>CHALLENGERS IN THIS SPIN</span>
+              </div>
+              {entriesList.length === 0 ? (
+                <div className="tv-empty-challengers">
+                  Be the first challenger on the board! Scan QR or ask the Host.
+                </div>
+              ) : (
+                <div className="tv-challenger-chips">
+                  {entriesList.slice(-8).reverse().map((ent) => (
+                    <div key={ent.id || ent.number} className="tv-challenger-pill">
+                      <span className="challenger-num">#{ent.number}</span>
+                      <span className="challenger-nick">{ent.nickname}</span>
+                      {isCashRound && Number(ent.bet_amount) > 0 && (
+                        <span className="challenger-bet">R{ent.bet_amount}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </section>
       </main>
@@ -379,9 +476,10 @@ export function TvView() {
         <div className="tv-result-overlay">
           {hasWinner ? (
             <div className="tv-result-card animate-pop-in">
-              <div className="result-sparkles">
-                <Sparkles size={48} className="text-gold spin-slow" />
+              <div className="result-crown-badge">
+                <Trophy size={42} className="text-gold" />
               </div>
+              <div className="result-kicker">★ CONGRATULATIONS ★</div>
               <div className="result-headline">WE HAVE A WINNER!</div>
 
               <div className="result-number-pod">
@@ -392,7 +490,7 @@ export function TvView() {
               {/* Winner nickname */}
               {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname && (
                 <div className="result-player-name">
-                  {session.entries.find(e => e.number === currentRound.winningNumber)?.nickname}
+                  👑 {session.entries.find(e => e.number === currentRound.winningNumber)?.nickname}
                 </div>
               )}
 
@@ -410,9 +508,9 @@ export function TvView() {
                         ? `🎯 ${tierLabel || `R${winPayout} CASH PRIZE`} HIT!`
                         : isCashRound
                           ? `🔥 ${winMult}X CASH MULTIPLIER HIT!`
-                          : 'WINS PRIZE:'}
+                          : '🏆 GRAND PRIZE WON:'}
                     </span>
-                    <span className="result-prize-title" style={{ color: prize.color || '#f59e0b' }}>
+                    <span className="result-prize-title" style={{ color: prize.color || '#fef08a' }}>
                       {isCashRound && winPayout > 0 ? `R${winPayout} CASH!` : prize.name}
                     </span>
                     <span className="result-prize-val">
@@ -425,6 +523,7 @@ export function TvView() {
               })()}
 
               <div className="result-footer-instructions">
+                <ShieldCheck size={16} className="inline-icon text-cyan" />
                 {session.entries?.find(e => e.number === currentRound.winningNumber)?.player_token?.startsWith('host_pick_')
                   ? 'Host-registered pick! Claim your prize directly with the Chillax Host at the front desk!'
                   : 'Present your winning phone screen or verify with the Chillax front desk to redeem!'}
@@ -432,6 +531,7 @@ export function TvView() {
             </div>
           ) : (
             <div className="tv-result-card tv-no-winner-card animate-pop-in">
+              <div className="result-kicker text-danger">UNCLAIMED POCKET</div>
               <div className="result-headline text-danger">NO WINNER THIS ROUND!</div>
 
               <div className="result-number-pod border-danger">
@@ -440,20 +540,20 @@ export function TvView() {
               </div>
 
               <div className="result-unclaimed-notice">
-                The wheel landed on <strong>#{currentRound.winningNumber}</strong>, but no player claimed it!
+                The wheel landed on <strong>#{currentRound.winningNumber}</strong>, which was unclaimed this round!
               </div>
 
               {prize && (
                 <div className="result-prize-box">
-                  <span className="result-won-label text-gold">PRIZE ROLLS OVER:</span>
+                  <span className="result-won-label text-gold">PRIZE ROLLS OVER TO NEXT SPIN:</span>
                   <span className="result-prize-title" style={{ color: prize.color || '#00f2fe' }}>
-                    {prize.name}
+                    {isWeightedCash ? '💰 Cash Multiplier (1.5x / 2x / 3x)' : prize.name}
                   </span>
                 </div>
               )}
 
               <div className="result-footer-instructions">
-                Better luck next round! Prepare your numbers on your phone...
+                Get ready for the next round — Lock in your lucky numbers now!
               </div>
             </div>
           )}
