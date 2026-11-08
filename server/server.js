@@ -577,8 +577,26 @@ io.on('connection', (socket) => {
 });
 
 // -------------------------------------------------------------
-// Static Frontend Production Delivery
+// Static Frontend Production Delivery & TV APK Download
 // -------------------------------------------------------------
+const tvApkPath = path.join(__dirname, '..', 'android-tv', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+app.get(['/tv.apk', '/chillax-tv.apk', '/api/tv-apk'], (req, res) => {
+  res.download(tvApkPath, 'Chillax-Spin-And-Win-TV.apk', (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: 'Android TV APK not found on server' });
+    }
+  });
+});
+
+const tvLockApkPath = path.join(__dirname, '..', '..', 'ChillaxGamingCenter', 'chillax-tv-lock.apk');
+app.get(['/lock.apk', '/chillax-lock.apk'], (req, res) => {
+  res.download(tvLockApkPath, 'Chillax-TV-Lock.apk', (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: 'Chillax TV Lock APK not found on server' });
+    }
+  });
+});
+
 const distPath = path.join(__dirname, '..', 'dist');
 app.use(express.static(distPath));
 
