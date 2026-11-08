@@ -554,6 +554,60 @@ export function HostView() {
     await apiRequest(`/api/sessions/${session.sessionId}/financial-settings`, 'POST', partialSettings);
   };
 
+  // Host accepts & confirms payment for a pending /join entry
+  const handleApprovePendingEntry = async (entryIdOrNumber, customBet = null) => {
+    if (!session?.sessionId || isAssigningPick) return;
+    setIsAssigningPick(true);
+    setHostPickFeedback('');
+    const body = customBet !== null && customBet !== undefined ? { betAmount: Number(customBet) } : {};
+    const data = await apiRequest(
+      `/api/sessions/${session.sessionId}/pending-entries/${encodeURIComponent(entryIdOrNumber)}/approve`,
+      'POST',
+      body
+    );
+    setIsAssigningPick(false);
+    if (data?.success) {
+      setHostPickFeedback(
+        `✅ Accepted #${data.number} for ${data.nickname}${data.betAmount > 0 ? ` (Confirmed Paid R${data.betAmount})` : ''} [Tx: ${data.txId || 'OK'}]`
+      );
+      if (String(selectedPickNum) === String(data.number)) {
+        setSelectedPickNum(null);
+      }
+    }
+  };
+
+  // Host accepts all pending /join entries at once
+  const handleApproveAllPendingEntries = async () => {
+    if (!session?.sessionId || isAssigningPick) return;
+    setIsAssigningPick(true);
+    setHostPickFeedback('');
+    const data = await apiRequest(`/api/sessions/${session.sessionId}/pending-entries/approve-all`, 'POST', {});
+    setIsAssigningPick(false);
+    if (data?.success) {
+      setHostPickFeedback(`✅ Accepted all ${data.approvedCount} pending mobile join entries!`);
+      setSelectedPickNum(null);
+    }
+  };
+
+  // Host rejects/declines an unpaid or unauthorized pending /join entry
+  const handleRejectPendingEntry = async (entryIdOrNumber) => {
+    if (!session?.sessionId || isAssigningPick) return;
+    setIsAssigningPick(true);
+    setHostPickFeedback('');
+    const data = await apiRequest(
+      `/api/sessions/${session.sessionId}/pending-entries/${encodeURIComponent(entryIdOrNumber)}/reject`,
+      'POST',
+      { reason: 'Declined by Host (unpaid/unauthorized)' }
+    );
+    setIsAssigningPick(false);
+    if (data?.success) {
+      setHostPickFeedback(`✕ Declined unpaid request for #${data.number} (${data.rejectedNickname || 'Player'})`);
+      if (String(selectedPickNum) === String(data.number)) {
+        setSelectedPickNum(null);
+      }
+    }
+  };
+
   // Host releases/removes a claimed number while registration is open
   const handleHostUnclaimNumber = async (num) => {
     if (!session?.sessionId || isAssigningPick) return;
@@ -568,10 +622,10 @@ export function HostView() {
   };
 
   // Handle tapping a number chip in the Host grid
-  const handleChipClick = (num, existingEntry) => {
+  const handleChipClick = (num, existingEntry, pendingEntry = null) => {
     if (session?.status !== 'REGISTRATION_OPEN' || isAssigningPick) return;
 
-    if (existingEntry) {
+    if (existingEntry || pendingEntry) {
       setSelectedPickNum(String(selectedPickNum) === String(num) ? null : num);
       setHostPickFeedback('');
       return;
@@ -1084,6 +1138,11 @@ export function HostView() {
           <span className="pod-label">PLAYERS</span>
           <span className="pod-value text-gold">
             <Users size={16} className="inline-icon" /> {session.playerCount}
+            {(session.pendingEntries?.length || 0) > 0 && (
+              <span className="host-pending-count-pill" title="Mobile /join entries waiting for Host payment confirmation">
+                ⏳ {session.pendingEntries.length} Pending
+              </span>
+            )}
           </span>
         </div>
       </div>
@@ -1134,6 +1193,68 @@ export function HostView() {
             </div>
           )}
           <Award size={24} style={{ color: prize.color || '#00f2fe' }} />
+        </div>
+      )}
+
+      {/* PENDING MOBILE JOIN REQUESTS QUEUE (Host Payment & Entry Approval Gate) */}
+      {status === 'REGISTRATION_OPEN' && (session.pendingEntries?.length || 0) > 0 && (
+        <div className="host-pending-approvals-card animate-pop-in">
+          <div className="pending-approvals-header">
+            <div className="pending-approvals-title">
+              <span className="pulse-dot amber" />
+              <span>
+                ⏳ PENDING MOBILE JOIN ENTRIES ({session.pendingEntries.length}) — VERIFY PAYMENT &amp; ACCEPT
+              </span>
+            </div>
+            {session.pendingEntries.length > 1 && (
+              <button
+                type="button"
+                disabled={isAssigningPick}
+                onClick={handleApproveAllPendingEntries}
+                className="host-approve-all-btn"
+              >
+                <Check size={14} className="inline-icon" /> Accept All ({session.pendingEntries.length})
+              </button>
+            )}
+          </div>
+          <p className="pending-approvals-sub">
+            Players who joined via QR/phone must be accepted here after confirming payment so no unpaid entries are registered.
+          </p>
+          <div className="pending-approvals-list">
+            {session.pendingEntries.map((p) => (
+              <div key={p.id} className="pending-approval-row">
+                <div className="pending-row-info">
+                  <span className="pending-num-badge">#{p.number}</span>
+                  <div className="pending-player-meta">
+                    <strong className="pending-player-name">{p.nickname}</strong>
+                    <span className="pending-stake-tag">
+                      {isCashRound && Number(p.bet_amount) > 0
+                        ? `Confirm Paid: R${p.bet_amount} (Win R${Math.round(Number(p.bet_amount) * 1.5 * 100) / 100}–R${Math.round(Number(p.bet_amount) * 3 * 100) / 100})`
+                        : 'Promo Entry Request'}
+                    </span>
+                  </div>
+                </div>
+                <div className="pending-row-actions">
+                  <button
+                    type="button"
+                    disabled={isAssigningPick}
+                    onClick={() => handleApprovePendingEntry(p.id)}
+                    className="host-accept-entry-btn"
+                  >
+                    <Check size={14} className="inline-icon" /> Accept{isCashRound && Number(p.bet_amount) > 0 ? ` (R${p.bet_amount} Paid)` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isAssigningPick}
+                    onClick={() => handleRejectPendingEntry(p.id)}
+                    className="host-reject-entry-btn"
+                  >
+                    <XCircle size={14} className="inline-icon" /> Decline
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1850,7 +1971,7 @@ export function HostView() {
                   }
                   className="host-walkin-input"
                 />
-                {selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum) && (
+                {selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum) && !session.pendingEntries?.some(en => en.number === selectedPickNum) && (
                   <button
                     type="submit"
                     disabled={isAssigningPick}
@@ -1861,6 +1982,51 @@ export function HostView() {
                 )}
               </div>
             </form>
+
+            {/* Selected Pending Join Number Management Bar */}
+            {selectedPickNum && session.pendingEntries?.some(en => en.number === selectedPickNum) && (() => {
+              const selPending = session.pendingEntries.find(en => en.number === selectedPickNum);
+              return (
+                <div className="host-selected-entry-bar pending-entry-bar">
+                  <div className="selected-entry-info">
+                    <span className="selected-num-badge pending-badge">#{selectedPickNum}</span>
+                    <span>
+                      ⏳ <strong>Pending Join Request</strong> from <strong>{selPending.nickname}</strong>{' '}
+                      {isCashRound && selPending.bet_amount > 0 && (
+                        <strong className="text-gold">
+                          • Stake R{selPending.bet_amount} (Unconfirmed)
+                        </strong>
+                      )}
+                    </span>
+                  </div>
+                  <div className="selected-entry-actions">
+                    <button
+                      type="button"
+                      disabled={isAssigningPick}
+                      onClick={() => handleApprovePendingEntry(selPending.id)}
+                      className="host-accept-entry-btn"
+                    >
+                      <Check size={14} className="inline-icon" /> Accept{isCashRound && selPending.bet_amount > 0 ? ` (Confirm R${selPending.bet_amount} Paid)` : ' Entry'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isAssigningPick}
+                      onClick={() => handleRejectPendingEntry(selPending.id)}
+                      className="host-reject-entry-btn"
+                    >
+                      <XCircle size={14} className="inline-icon" /> Decline #{selectedPickNum}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPickNum(null)}
+                      className="host-cancel-sel-btn"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Selected Claimed Number Management Bar */}
             {selectedPickNum && session.entries?.some(en => en.number === selectedPickNum) && (() => {
@@ -1881,7 +2047,7 @@ export function HostView() {
                         <span className="text-xs text-cyan">[{selEntry.tx_id}] </span>
                       )}
                       <span className="text-muted text-xs">
-                        ({isHostEntry ? 'Host Pick' : 'Phone'})
+                        ({isHostEntry ? 'Host Pick' : 'Approved Phone'})
                       </span>
                     </span>
                   </div>
@@ -1917,6 +2083,7 @@ export function HostView() {
         <div className="host-number-chips-grid">
           {gridDisplayNumbers.map((num) => {
             const entry = session.entries?.find(e => String(e.number) === String(num));
+            const pendingEntry = session.pendingEntries?.find(e => String(e.number) === String(num));
             const isWinner = isResult && String(currentRound?.winningNumber) === String(num);
             const isSelected = String(selectedPickNum) === String(num);
             const isHostPick = entry?.player_token?.startsWith('host_pick_');
@@ -1928,24 +2095,29 @@ export function HostView() {
                 key={num}
                 type="button"
                 disabled={!isInteractive || isAssigningPick}
-                onClick={() => handleChipClick(num, entry)}
-                className={`host-num-chip ${isZero ? 'zero-chip' : ''} ${entry ? 'claimed' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive ? 'interactive' : ''}`}
+                onClick={() => handleChipClick(num, entry, pendingEntry)}
+                className={`host-num-chip ${isZero ? 'zero-chip' : ''} ${entry ? 'claimed' : pendingEntry ? 'pending-approval' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive ? 'interactive' : ''}`}
               >
                 <div className="chip-top-row">
                   <span className="chip-num">{num}</span>
                   {isHostPick && <span className="chip-host-dot" title="Entered by Host">H</span>}
+                  {!entry && pendingEntry && <span className="chip-pending-dot" title="Pending Host Approval">⏳</span>}
                 </div>
                 <span
                   className="chip-player"
                   title={
                     entry
                       ? `${entry.nickname}${entry.bet_amount > 0 ? ` (Stake R${entry.bet_amount})` : ''}${entry.tx_id ? ` [${entry.tx_id}]` : ''}`
-                      : 'Tap to claim'
+                      : pendingEntry
+                        ? `PENDING APPROVAL: ${pendingEntry.nickname}${pendingEntry.bet_amount > 0 ? ` (R${pendingEntry.bet_amount})` : ''} — Tap to Accept or Decline`
+                        : 'Tap to claim'
                   }
                 >
                   {entry
                     ? `${entry.nickname}${isCashRound && entry.bet_amount > 0 ? ` • R${entry.bet_amount}` : ''}`
-                    : (isInteractive ? '+ Pick' : '—')}
+                    : pendingEntry
+                      ? `⏳ ${pendingEntry.nickname}${isCashRound && pendingEntry.bet_amount > 0 ? ` • R${pendingEntry.bet_amount}` : ''}`
+                      : (isInteractive ? '+ Pick' : '—')}
                 </span>
               </button>
             );

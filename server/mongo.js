@@ -633,7 +633,7 @@ export async function syncAllSessionEntriesToHub(sqliteDb, targetSessionId = nul
     JOIN rounds r ON e.round_id = r.id
     LEFT JOIN prizes p ON r.prize_id = p.id
     LEFT JOIN redemptions red ON r.id = red.round_id
-    ${targetSessionId ? 'WHERE e.session_id = ?' : ''}
+    ${targetSessionId ? "WHERE e.session_id = ? AND e.status != 'PENDING'" : "WHERE e.status != 'PENDING'"}
     ORDER BY e.claimed_at DESC
   `;
 

@@ -318,7 +318,7 @@ app.post('/api/sessions/:id/pair-tv', (req, res) => {
   res.json(result);
 });
 
-// POST /api/sessions/:id/entries: Claim a number for the current round (Player)
+// POST /api/sessions/:id/entries: Request/claim a number for the current round (Player — pending Host approval)
 app.post('/api/sessions/:id/entries', (req, res) => {
   const { number, playerToken, nickname, betAmount, ageVerified } = req.body;
   if (!playerToken) {
@@ -329,6 +329,57 @@ app.post('/api/sessions/:id/entries', (req, res) => {
     return res.status(result.status || 400).json(result);
   }
   res.status(201).json(result);
+});
+
+// POST /api/sessions/:id/entries/cancel: Player cancels their own unapproved PENDING entry request
+app.post('/api/sessions/:id/entries/cancel', (req, res) => {
+  const { playerToken } = req.body;
+  if (!playerToken) {
+    return res.status(400).json({ error: 'Player token is required.' });
+  }
+  const result = engine.cancelPendingEntry(req.params.id, { playerToken });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// POST /api/sessions/:id/pending-entries/approve-all: Host accepts all pending /join entries (Host)
+app.post('/api/sessions/:id/pending-entries/approve-all', requireHostAuth, (req, res) => {
+  const result = engine.hostApproveAllEntries(req.params.id);
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// POST /api/sessions/:id/pending-entries/:target/approve: Host accepts & confirms payment for a /join entry (Host)
+app.post('/api/sessions/:id/pending-entries/:target/approve', requireHostAuth, (req, res) => {
+  const { betAmount } = req.body || {};
+  const result = engine.hostApproveEntry(req.params.id, req.params.target, { betAmount });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// POST /api/sessions/:id/pending-entries/:target/reject: Host rejects an unpaid/unauthorized /join entry (Host)
+app.post('/api/sessions/:id/pending-entries/:target/reject', requireHostAuth, (req, res) => {
+  const { reason } = req.body || {};
+  const result = engine.hostRejectEntry(req.params.id, req.params.target, { reason });
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
+});
+
+// DELETE /api/sessions/:id/pending-entries/:target: Host rejects/deletes a pending /join entry (Host)
+app.delete('/api/sessions/:id/pending-entries/:target', requireHostAuth, (req, res) => {
+  const result = engine.hostRejectEntry(req.params.id, req.params.target);
+  if (!result.success) {
+    return res.status(result.status || 400).json(result);
+  }
+  res.json(result);
 });
 
 // POST /api/sessions/:id/host-entries: Host claims a number for a player without a phone (Host)

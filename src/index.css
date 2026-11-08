@@ -4007,3 +4007,274 @@ body {
   text-align: center;
 }
 
+/* ========================================================
+   HOST ENTRY APPROVAL GATE (PENDING /JOIN REQUESTS)
+   ======================================================== */
+.host-pending-count-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: 0.55rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 800;
+  background: rgba(245, 158, 11, 0.22);
+  border: 1px solid rgba(251, 191, 36, 0.75);
+  color: #fef08a;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+  animation: pulseDot 1.6s infinite;
+}
+
+.host-pending-approvals-card {
+  background: linear-gradient(150deg, rgba(69, 26, 3, 0.58) 0%, rgba(15, 23, 42, 0.96) 100%);
+  border: 2px solid rgba(251, 191, 36, 0.78);
+  border-radius: 18px;
+  padding: 1rem 1.15rem;
+  box-shadow:
+    0 14px 34px rgba(0, 0, 0, 0.55),
+    0 0 24px rgba(245, 158, 11, 0.22),
+    inset 0 1px 0 rgba(254, 240, 138, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.pending-approvals-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.pending-approvals-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-arcade);
+  font-size: 0.84rem;
+  font-weight: 900;
+  color: #fef08a;
+  letter-spacing: 0.6px;
+}
+
+.pending-approvals-sub {
+  font-size: 0.8rem;
+  color: #fde68a;
+  margin: 0;
+  opacity: 0.92;
+}
+
+.host-approve-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: linear-gradient(135deg, #34d399 0%, #059669 100%);
+  color: #03150e;
+  border: 1px solid #a7f3d0;
+  border-radius: 999px;
+  padding: 0.38rem 0.85rem;
+  font-family: var(--font-arcade);
+  font-size: 0.74rem;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.4);
+  transition: all 0.16s ease;
+}
+
+.host-approve-all-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.6);
+}
+
+.pending-approvals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pending-approval-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  background: rgba(5, 10, 24, 0.82);
+  border: 1.5px solid rgba(251, 191, 36, 0.45);
+  border-radius: 12px;
+  padding: 0.6rem 0.85rem;
+}
+
+.pending-row-info {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.pending-num-badge {
+  font-family: var(--font-arcade);
+  font-size: 1rem;
+  font-weight: 900;
+  background: linear-gradient(135deg, #fde047 0%, #f59e0b 100%);
+  color: #090d16;
+  padding: 0.28rem 0.65rem;
+  border-radius: 9px;
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.45);
+}
+
+.pending-player-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.pending-player-name {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.pending-stake-tag {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #6ee7b7;
+}
+
+.pending-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.host-accept-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: linear-gradient(135deg, #34d399 0%, #10b981 55%, #059669 100%);
+  color: #03150e;
+  border: 1px solid #a7f3d0;
+  border-radius: 9px;
+  padding: 0.45rem 0.85rem;
+  font-family: var(--font-arcade);
+  font-size: 0.75rem;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.38);
+  transition: all 0.16s ease;
+}
+
+.host-accept-entry-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.55);
+}
+
+.host-reject-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  border-radius: 9px;
+  padding: 0.45rem 0.72rem;
+  font-family: var(--font-arcade);
+  font-size: 0.73rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.host-reject-entry-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.3);
+  color: #ffffff;
+}
+
+/* Pending chip on Host Number Grid */
+.host-num-chip.pending-approval {
+  background: linear-gradient(155deg, rgba(120, 53, 15, 0.55) 0%, rgba(15, 23, 42, 0.92) 100%);
+  border: 2px dashed #fbbf24;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.32);
+}
+
+.host-num-chip.pending-approval .chip-num {
+  color: #fef08a;
+}
+
+.host-num-chip.pending-approval .chip-player {
+  color: #fde68a;
+  font-weight: 700;
+}
+
+.chip-pending-dot {
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.host-selected-entry-bar.pending-entry-bar {
+  background: linear-gradient(135deg, rgba(120, 53, 15, 0.42) 0%, rgba(15, 23, 42, 0.95) 100%);
+  border-color: rgba(251, 191, 36, 0.7);
+}
+
+.selected-num-badge.pending-badge {
+  background: linear-gradient(135deg, #fde047 0%, #f59e0b 100%);
+  color: #090d16;
+}
+
+/* Player View Pending Approval Ticket & Grid States */
+.player-vip-ticket.pending-vip-ticket {
+  background: linear-gradient(135deg, rgba(120, 53, 15, 0.55) 0%, rgba(30, 41, 59, 0.95) 100%);
+  border: 2px dashed #fbbf24;
+  box-shadow: 0 12px 30px rgba(245, 158, 11, 0.25);
+}
+
+.vip-ticket-pending-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px dashed rgba(251, 191, 36, 0.35);
+}
+
+.pending-hint {
+  font-size: 0.74rem;
+  color: #fef08a;
+  font-weight: 600;
+}
+
+.cancel-pending-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 999px;
+  padding: 0.22rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.my-pick-badge.pending-badge {
+  background: rgba(245, 158, 11, 0.24);
+  border-color: #fbbf24;
+  color: #fef08a;
+}
+
+.player-grid-btn.my-pending-pick {
+  background: linear-gradient(145deg, rgba(245, 158, 11, 0.32) 0%, rgba(120, 53, 15, 0.42) 100%);
+  border: 2px dashed #fde047;
+  box-shadow: 0 0 18px rgba(245, 158, 11, 0.45);
+}
+
+.player-grid-btn.my-pending-pick .btn-num,
+.player-grid-btn.my-pending-pick .btn-state-label {
+  color: #fef08a;
+}
+
+

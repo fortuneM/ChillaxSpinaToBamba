@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { getSocket, getPlayerToken, getSavedNickname, saveNickname } from '../utils/socket';
 import { sounds } from '../utils/sound';
 import confetti from 'canvas-confetti';
-import { Check, Lock, Sparkles, Award, User, RefreshCw, AlertCircle, Trophy, Zap, Ticket, ShieldCheck } from 'lucide-react';
+import { Check, Lock, Sparkles, Award, User, RefreshCw, AlertCircle, Trophy, Zap, Ticket, ShieldCheck, Clock, XCircle } from 'lucide-react';
 
 export function PlayerView() {
   const [code, setCode] = useState('');
@@ -70,9 +70,33 @@ export function PlayerView() {
       }
     };
 
+    const handleEntryApproved = (data) => {
+      if (data?.playerToken === playerToken) {
+        sounds.playClick();
+        setErrorMsg('');
+        setClaimSuccessMsg(
+          `✅ Host accepted your entry! Lucky Number #${data.number} is confirmed & locked in for this spin!`
+        );
+      }
+    };
+
+    const handleEntryRejected = (data) => {
+      if (data?.playerToken === playerToken) {
+        sounds.playError();
+        setClaimSuccessMsg('');
+        setErrorMsg(
+          `Your request for #${data.number} was not accepted by the Host (${data.reason || 'Unpaid / Declined'}). Please see the Host at the counter.`
+        );
+      }
+    };
+
     socket.on('session:state', handleState);
+    socket.on('entry:approved', handleEntryApproved);
+    socket.on('entry:rejected', handleEntryRejected);
     return () => {
       socket.off('session:state', handleState);
+      socket.off('entry:approved', handleEntryApproved);
+      socket.off('entry:rejected', handleEntryRejected);
     };
   }, [session?.sessionId, playerToken]);
 
@@ -87,7 +111,33 @@ export function PlayerView() {
     } catch {}
   }, []);
 
-  // Claim a number
+  // Cancel unapproved pending entry request
+  const handleCancelPending = async () => {
+    if (!session?.sessionId || isClaiming) return;
+    setIsClaiming(true);
+    setErrorMsg('');
+    setClaimSuccessMsg('');
+    try {
+      const res = await fetch(`/api/sessions/${session.sessionId}/entries/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerToken })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        sounds.playClick();
+        setClaimSuccessMsg(data.message || 'Pending entry request cancelled.');
+      } else {
+        setErrorMsg(data.error || 'Could not cancel request.');
+      }
+    } catch {
+      setErrorMsg('Network error cancelling request.');
+    } finally {
+      setIsClaiming(false);
+    }
+  };
+
+  // Request a number (requires Host acceptance before becoming ACTIVE)
   const handleClaimNumber = async (num) => {
     if (!nickname.trim()) {
       setErrorMsg('Please enter your nickname first!');
@@ -137,16 +187,18 @@ export function PlayerView() {
 
       const data = await res.json();
       if (!res.ok) {
-        setErrorMsg(data.error || 'Failed to claim number.');
+        setErrorMsg(data.error || 'Failed to request number.');
         sounds.playError();
       } else {
         sounds.playClick();
         if (isCashRound) {
           setClaimSuccessMsg(
-            `Locked in #${num} with a R${data.betAmount} stake (Tx: ${data.txId || 'OK'}) — Win R${Math.round(data.betAmount * 1.5 * 100) / 100} to R${Math.round(data.betAmount * 3 * 100) / 100} Cash!`
+            `⏳ Request sent for #${num} (R${data.betAmount} stake)! Please pay & ask the Host at the counter to accept your entry.`
           );
         } else {
-          setClaimSuccessMsg(`You claimed Lucky Number #${num} (Tx: ${data.txId || 'OK'})! Eyes on the TV!`);
+          setClaimSuccessMsg(
+            `⏳ Request sent for Lucky Number #${num}! Waiting for the Host to accept your entry.`
+          );
         }
       }
     } catch {
@@ -246,10 +298,14 @@ export function PlayerView() {
   const isWeightedCash = Boolean(currentRound?.isWeightedCash || prize?.prize_type === 'weighted_cash');
   const isCashRound = Boolean(currentRound?.isCashRound || prize?.prize_type === 'cash_multiplier' || isWeightedCash);
   const myEntry = session.entries?.find((e) => e.player_token === playerToken);
-  const myClaimedNumber = myEntry?.number;
-  const isWinner = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber === currentRound?.winningNumber;
+  const myPendingEntry = session.pendingEntries?.find((e) => e.player_token === playerToken);
+  const myActiveOrPending = myEntry || myPendingEntry;
+  const myClaimedNumber = myActiveOrPending?.number;
+  const isMyPickApproved = Boolean(myEntry);
+  const isMyPickPending = Boolean(myPendingEntry && !myEntry);
+  const isWinner = status === 'RESULT' && currentRound?.hasWinner && myEntry?.number === currentRound?.winningNumber;
   const isNoWinner = status === 'RESULT' && !currentRound?.hasWinner;
-  const isLoser = status === 'RESULT' && currentRound?.hasWinner && myClaimedNumber !== currentRound?.winningNumber;
+  const isLoser = status === 'RESULT' && currentRound?.hasWinner && myEntry?.number !== currentRound?.winningNumber;
 
   // Grid displays 0 and 00 at the top row, followed by 1 to N
   const allWheelPockets = session?.wheelNumbers || [];
@@ -287,12 +343,12 @@ export function PlayerView() {
             }}
             placeholder="Tap to enter your nickname..."
             className="player-mini-input"
-            disabled={status !== 'REGISTRATION_OPEN'}
+            disabled={status !== 'REGISTRATION_OPEN' || isMyPickApproved}
           />
         </div>
         {myClaimedNumber && (
-          <div className="my-pick-badge">
-            ★ PICK #{myClaimedNumber}
+          <div className={`my-pick-badge ${isMyPickPending ? 'pending-badge' : ''}`}>
+            {isMyPickPending ? `⏳ #${myClaimedNumber} PENDING` : `★ PICK #${myClaimedNumber}`}
           </div>
         )}
       </div>
@@ -302,7 +358,13 @@ export function PlayerView() {
         {status === 'REGISTRATION_OPEN' && (
           <div className="banner-content open">
             <span className="pulse-dot green" />
-            <span>Entries Open — Tap your lucky number below!</span>
+            <span>
+              {isMyPickPending
+                ? `Waiting for Host to accept your #${myClaimedNumber} entry...`
+                : isMyPickApproved
+                  ? `Your #${myClaimedNumber} entry is accepted & locked in!`
+                  : 'Entries Open — Tap your lucky number below!'}
+            </span>
           </div>
         )}
         {status === 'REGISTRATION_CLOSED' && (
@@ -325,23 +387,44 @@ export function PlayerView() {
         )}
       </div>
 
-      {/* Golden VIP Active Ticket (if player has claimed a number) */}
+      {/* Golden VIP Active / Pending Approval Ticket */}
       {myClaimedNumber && status !== 'RESULT' && (
-        <div className="player-vip-ticket animate-pop-in">
+        <div className={`player-vip-ticket ${isMyPickPending ? 'pending-vip-ticket' : 'approved-vip-ticket'} animate-pop-in`}>
           <div className="vip-ticket-left">
             <span className="vip-ticket-kicker">
-              <Ticket size={13} className="inline-icon" /> YOUR ACTIVE LUCKY TICKET
+              {isMyPickPending ? (
+                <><Clock size={13} className="inline-icon" /> WAITING FOR HOST APPROVAL</>
+              ) : (
+                <><Ticket size={13} className="inline-icon" /> HOST ACCEPTED • ACTIVE LUCKY TICKET</>
+              )}
             </span>
-            <span className="vip-ticket-player">{myEntry?.nickname || nickname}</span>
+            <span className="vip-ticket-player">{myActiveOrPending?.nickname || nickname}</span>
             <span className="vip-ticket-meta">
-              {isCashRound && myEntry?.bet_amount >= 5
-                ? `Stake: R${myEntry.bet_amount} • Potential Win: R${Math.round(myEntry.bet_amount * 1.5 * 100) / 100}–R${Math.round(myEntry.bet_amount * 3 * 100) / 100}`
-                : `Prize Round Entry`}
-              {myEntry?.tx_id ? ` • ${myEntry.tx_id}` : ''}
+              {isCashRound && myActiveOrPending?.bet_amount >= 5
+                ? `Stake: R${myActiveOrPending.bet_amount}${isMyPickPending ? ' (Pay at Host Counter)' : ' (PAID & CONFIRMED)'} • Win: R${Math.round(myActiveOrPending.bet_amount * 1.5 * 100) / 100}–R${Math.round(myActiveOrPending.bet_amount * 3 * 100) / 100}`
+                : isMyPickPending
+                  ? 'Ask the Host at the counter to accept your entry'
+                  : 'Confirmed Prize Round Entry'}
+              {myActiveOrPending?.tx_id ? ` • ${myActiveOrPending.tx_id}` : ''}
             </span>
+            {isMyPickPending && status === 'REGISTRATION_OPEN' && (
+              <div className="vip-ticket-pending-actions">
+                <span className="pending-hint">
+                  💡 Show this screen &amp; pay at the Host desk so your number is activated!
+                </span>
+                <button
+                  type="button"
+                  disabled={isClaiming}
+                  onClick={handleCancelPending}
+                  className="cancel-pending-btn"
+                >
+                  <XCircle size={12} className="inline-icon" /> Cancel Request
+                </button>
+              </div>
+            )}
           </div>
           <div className="vip-ticket-number-medallion">
-            <span className="medallion-label">LUCKY #</span>
+            <span className="medallion-label">{isMyPickPending ? 'PENDING #' : 'LUCKY #'}</span>
             <span className="medallion-num">{myClaimedNumber}</span>
           </div>
         </div>
@@ -386,7 +469,7 @@ export function PlayerView() {
               <button
                 key={amt}
                 type="button"
-                disabled={status !== 'REGISTRATION_OPEN'}
+                disabled={status !== 'REGISTRATION_OPEN' || isMyPickApproved}
                 onClick={() => setBetAmount(amt)}
                 className={`bet-preset-pill ${Number(betAmount) === amt ? 'active' : ''}`}
               >
@@ -400,20 +483,20 @@ export function PlayerView() {
               type="number"
               min="5"
               step="1"
-              disabled={status !== 'REGISTRATION_OPEN'}
+              disabled={status !== 'REGISTRATION_OPEN' || isMyPickApproved}
               value={betAmount}
               onChange={(e) => setBetAmount(e.target.value)}
               placeholder="Enter amount (min R5)"
               className="bet-custom-input"
             />
-            {myClaimedNumber && status === 'REGISTRATION_OPEN' && Number(myEntry?.bet_amount) !== Number(betAmount) && Number(betAmount) >= 5 && (
+            {isMyPickPending && status === 'REGISTRATION_OPEN' && Number(myPendingEntry?.bet_amount) !== Number(betAmount) && Number(betAmount) >= 5 && (
               <button
                 type="button"
                 disabled={isClaiming}
                 onClick={() => handleClaimNumber(myClaimedNumber)}
                 className="bet-update-btn"
               >
-                Update Stake
+                Update Request
               </button>
             )}
           </div>
@@ -508,9 +591,10 @@ export function PlayerView() {
         <div className="player-number-grid">
           {gridDisplayNumbers.map((num) => {
             const entry = session.entries?.find((e) => String(e.number) === String(num));
+            const pendingEntry = session.pendingEntries?.find((e) => String(e.number) === String(num));
             const isMyPick = String(myClaimedNumber) === String(num);
-            const isTaken = Boolean(entry && !isMyPick);
-            const isLocked = status !== 'REGISTRATION_OPEN';
+            const isTaken = Boolean((entry || pendingEntry) && !isMyPick);
+            const isLocked = status !== 'REGISTRATION_OPEN' || isMyPickApproved;
             const isZero = String(num) === '0' || String(num) === '00';
             const isWinningPocket = status === 'RESULT' && String(currentRound?.winningNumber) === String(num);
 
@@ -520,18 +604,28 @@ export function PlayerView() {
                 type="button"
                 disabled={isTaken || isLocked || isClaiming}
                 onClick={() => handleClaimNumber(num)}
-                className={`player-grid-btn ${isZero ? 'zero-chip' : ''} ${isMyPick ? 'my-pick' : ''} ${isTaken ? 'taken' : 'available'} ${isWinningPocket ? 'winning-pocket' : ''}`}
+                className={`player-grid-btn ${isZero ? 'zero-chip' : ''} ${isMyPick ? (isMyPickPending ? 'my-pending-pick' : 'my-pick') : ''} ${isTaken ? 'taken' : 'available'} ${isWinningPocket ? 'winning-pocket' : ''}`}
               >
                 <span className="btn-num">{num}</span>
                 <span className="btn-state-label">
-                  {isMyPick && (
+                  {isMyPick && isMyPickApproved && (
                     <>
-                      <Check size={11} className="inline-icon" /> YOUR PICK
+                      <Check size={11} className="inline-icon" /> ACCEPTED
                     </>
                   )}
-                  {isTaken && (
+                  {isMyPick && isMyPickPending && (
+                    <>
+                      <Clock size={11} className="inline-icon" /> PENDING HOST
+                    </>
+                  )}
+                  {isTaken && entry && (
                     <>
                       <Lock size={10} className="inline-icon" /> {entry?.nickname ? entry.nickname.slice(0, 7) : 'TAKEN'}
+                    </>
+                  )}
+                  {isTaken && !entry && pendingEntry && (
+                    <>
+                      <Clock size={10} className="inline-icon" /> RESERVED
                     </>
                   )}
                   {!isMyPick && !isTaken && (isZero ? '★ VIP ZERO' : 'OPEN')}

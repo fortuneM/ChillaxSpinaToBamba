@@ -1096,6 +1096,7 @@ export class GameEngine {
     const currentRound = this.ensureCurrentRound(sessionId);
 
     let entries = [];
+    let pendingEntries = [];
     let prize = null;
 
     if (currentRound) {
@@ -1104,6 +1105,13 @@ export class GameEngine {
         FROM entries 
         WHERE round_id = ? AND status = 'ACTIVE'
         ORDER BY number ASC
+      `).all(currentRound.id);
+
+      pendingEntries = db.prepare(`
+        SELECT id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status 
+        FROM entries 
+        WHERE round_id = ? AND status = 'PENDING'
+        ORDER BY claimed_at ASC
       `).all(currentRound.id);
 
       if (currentRound.prize_id) {
@@ -1118,6 +1126,7 @@ export class GameEngine {
 
     const wheelNumbers = this.getWheelNumbers(session);
     const claimedNumbers = entries.map(e => String(e.number));
+    const pendingNumbers = pendingEntries.map(e => String(e.number));
     const totalBets = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
     const isWeightedCash = prize?.prize_type === 'weighted_cash';
     const isCashRound = Boolean(prize?.prize_type === 'cash_multiplier' || isWeightedCash);
@@ -1155,10 +1164,13 @@ export class GameEngine {
       },
       winnerMode: session.winner_mode || 'TRUE_ODDS',
       playerCount: entries.length,
+      pendingCount: pendingEntries.length,
       totalBets,
       houseCashStats,
       claimedNumbers,
+      pendingNumbers,
       entries,
+      pendingEntries,
       currentRound: currentRound ? {
         id: currentRound.id,
         roundNumber: currentRound.round_number,
@@ -1517,151 +1529,329 @@ export class GameEngine {
     const cleanNickname = String(nickname || 'Player').trim().slice(0, 18).replace(/[<>]/g, '');
     const txId = generateTransactionId(session.short_code);
 
-    // Execute atomic claim in SQLite
+    // Execute atomic request in SQLite (entries from /join require Host approval before becoming ACTIVE)
     try {
       const existingPlayerEntry = db.prepare(`
-        SELECT id, number, bet_amount, tx_id FROM entries 
-        WHERE round_id = ? AND player_token = ? AND status = 'ACTIVE'
+        SELECT id, number, bet_amount, tx_id, status FROM entries 
+        WHERE round_id = ? AND player_token = ?
       `).get(currentRound.id, playerToken);
 
-      if (existingPlayerEntry) {
-        if (String(existingPlayerEntry.number) === cleanNum) {
-          if (isCashRound && existingPlayerEntry.bet_amount !== cleanBetAmount) {
-            db.prepare(`
-              UPDATE entries SET bet_amount = ?, payout_amount = ?, nickname = ?, tx_id = ? WHERE id = ?
-            `).run(cleanBetAmount, cleanPayoutAmount, cleanNickname, txId, existingPlayerEntry.id);
-            this.syncEntryToMongo(existingPlayerEntry.id);
-            const updatedEntryRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(existingPlayerEntry.id);
-            if (updatedEntryRow) {
-              recordHubEntryTransaction({
-                entry: updatedEntryRow,
-                session,
-                round: currentRound,
-                prize,
-                cashierName: 'Mobile QR'
-              });
-            }
-            this.broadcastSessionState(sessionId);
-            return {
-              success: true,
-              number: cleanNum,
-              nickname: cleanNickname,
-              betAmount: cleanBetAmount,
-              payoutAmount: cleanPayoutAmount,
-              txId,
-              message: `Updated your bet on #${cleanNum} to R${cleanBetAmount} (Tx: ${txId})!`
-            };
-          }
-          return {
-            success: true,
-            number: cleanNum,
-            nickname: cleanNickname,
-            betAmount: cleanBetAmount,
-            payoutAmount: cleanPayoutAmount,
-            txId: existingPlayerEntry.tx_id || txId,
-            message: 'You already claimed this number.'
-          };
-        }
-        // Change player's number: delete previous claim and insert new claim atomically
-        db.exec('BEGIN TRANSACTION;');
-        let newEntryId = null;
-        try {
-          db.prepare(`
-            DELETE FROM entries WHERE round_id = ? AND player_token = ?
-          `).run(currentRound.id, playerToken);
-
-          newEntryId = 'ent_' + crypto.randomBytes(6).toString('hex');
-          db.prepare(`
-            INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-          `).run(newEntryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
-
-          db.exec('COMMIT;');
-        } catch (txErr) {
-          db.exec('ROLLBACK;');
-          throw txErr;
-        }
-        deleteRecordFromMongo('entries', existingPlayerEntry.id);
-        HubTransaction.deleteOne({ id: `tx_spin_entry_${existingPlayerEntry.id}` }).catch(() => {});
-        if (newEntryId) {
-          this.syncEntryToMongo(newEntryId);
-          const newEntryRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(newEntryId);
-          if (newEntryRow) {
-            recordHubEntryTransaction({
-              entry: newEntryRow,
-              session,
-              round: currentRound,
-              prize,
-              cashierName: 'Mobile QR'
-            });
-          }
-        }
-      } else {
-        // Fresh claim
-        const entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
-        db.prepare(`
-          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-        `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, new Date().toISOString());
-        this.syncEntryToMongo(entryId);
-        const createdEntryRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
-        if (createdEntryRow) {
-          recordHubEntryTransaction({
-            entry: createdEntryRow,
-            session,
-            round: currentRound,
-            prize,
-            cashierName: 'Mobile QR'
-          });
-        }
-
-        if (cleanBetAmount > 0) {
-          logReserveLedger({
-            sessionId,
-            roundId: currentRound.id,
-            entryId,
-            txId,
-            entryType: 'STAKE_RECEIVED',
-            amount: cleanBetAmount,
-            committedDelta: 0,
-            notes: `Player ${cleanNickname} staked R${cleanBetAmount} on #${cleanNum}`,
-            actorId: playerToken
-          });
-        }
+      if (existingPlayerEntry && existingPlayerEntry.status === 'ACTIVE') {
+        return {
+          success: false,
+          status: 409,
+          error: `Your entry on #${existingPlayerEntry.number} has already been accepted & locked by the Host! Ask the Host at the counter if you need to change it.`
+        };
       }
 
-      logAudit(sessionId, 'PLAYER', playerToken, 'NUMBER_CLAIMED', {
+      const takenByOther = db.prepare(`
+        SELECT id, nickname, status, player_token FROM entries
+        WHERE round_id = ? AND number = ? AND player_token != ?
+      `).get(currentRound.id, cleanNum, playerToken);
+
+      if (takenByOther) {
+        if (takenByOther.status === 'ACTIVE') {
+          return {
+            success: false,
+            status: 409,
+            error: `Number #${cleanNum} is already claimed by ${takenByOther.nickname}!`
+          };
+        }
+        return {
+          success: false,
+          status: 409,
+          error: `Number #${cleanNum} is currently awaiting Host approval for ${takenByOther.nickname}.`
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+      let entryId = existingPlayerEntry?.id || null;
+
+      if (existingPlayerEntry && existingPlayerEntry.status === 'PENDING') {
+        db.prepare(`
+          UPDATE entries
+          SET number = ?, bet_amount = ?, payout_amount = ?, nickname = ?, tx_id = ?, claimed_at = ?, status = 'PENDING'
+          WHERE id = ?
+        `).run(cleanNum, cleanBetAmount, cleanPayoutAmount, cleanNickname, txId, nowIso, existingPlayerEntry.id);
+        this.syncEntryToMongo(existingPlayerEntry.id);
+      } else {
+        entryId = 'ent_' + crypto.randomBytes(6).toString('hex');
+        db.prepare(`
+          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+        `).run(entryId, sessionId, currentRound.id, cleanNum, playerToken, cleanNickname, cleanBetAmount, cleanPayoutAmount, txId, ageVerified ? 1 : 0, nowIso);
+        this.syncEntryToMongo(entryId);
+      }
+
+      logAudit(sessionId, 'PLAYER', playerToken, 'ENTRY_REQUESTED', {
+        entryId,
         number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
-        txId
+        txId,
+        status: 'PENDING'
       });
 
-      this.io.to(sessionId).emit('entry:claimed', {
+      this.io.to(sessionId).emit('entry:requested', {
+        id: entryId,
         number: cleanNum,
         nickname: cleanNickname,
         playerToken,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
-        txId
+        txId,
+        status: 'PENDING'
       });
       this.broadcastSessionState(sessionId);
 
       return {
         success: true,
+        entryId,
+        status: 'PENDING',
+        pendingApproval: true,
         number: cleanNum,
         nickname: cleanNickname,
         betAmount: cleanBetAmount,
         payoutAmount: cleanPayoutAmount,
-        txId
+        txId,
+        message: isCashRound
+          ? `Request sent for #${cleanNum} (R${cleanBetAmount} stake)! Please pay & ask the Host to accept your entry.`
+          : `Request sent for Lucky Number #${cleanNum}! Waiting for the Host to accept your entry.`
       };
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE constraint failed')) {
-        return { success: false, status: 409, error: `Number #${cleanNum} was just claimed by someone else!` };
+        return { success: false, status: 409, error: `Number #${cleanNum} was just requested or claimed by someone else!` };
       }
       return { success: false, status: 500, error: 'Database claim error: ' + err.message };
     }
+  }
+
+  // Player cancels their own unapproved PENDING request from /join
+  cancelPendingEntry(sessionId, { playerToken }) {
+    const currentRound = this.ensureCurrentRound(sessionId);
+    if (!currentRound) {
+      return { success: false, status: 400, error: 'No active round found.' };
+    }
+
+    const pendingEntry = db.prepare(`
+      SELECT * FROM entries WHERE round_id = ? AND player_token = ? AND status = 'PENDING'
+    `).get(currentRound.id, playerToken);
+
+    if (!pendingEntry) {
+      return { success: false, status: 404, error: 'No pending entry request found to cancel.' };
+    }
+
+    db.prepare('DELETE FROM entries WHERE id = ?').run(pendingEntry.id);
+    deleteRecordFromMongo('entries', pendingEntry.id);
+
+    logAudit(sessionId, 'PLAYER', playerToken, 'PENDING_ENTRY_CANCELLED', {
+      entryId: pendingEntry.id,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname
+    });
+
+    this.broadcastSessionState(sessionId);
+    return {
+      success: true,
+      cancelledNumber: pendingEntry.number,
+      message: `Cancelled your pending request for #${pendingEntry.number}.`
+    };
+  }
+
+  // Host accepts & confirms a PENDING player entry from /join (verifies payment & activates the number)
+  hostApproveEntry(sessionId, entryIdOrNumber, { betAmount = null } = {}) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) {
+      return { success: false, status: 404, error: 'Session not found.' };
+    }
+
+    const currentRound = this.ensureCurrentRound(sessionId);
+    if (!currentRound) {
+      return { success: false, status: 400, error: 'No active round found.' };
+    }
+
+    if (currentRound.status !== 'REGISTRATION_OPEN') {
+      return { success: false, status: 409, error: 'Cannot approve entries after registration is closed.' };
+    }
+
+    const cleanTarget = String(entryIdOrNumber || '').trim();
+    const cleanNum = normalizeWheelNumber(cleanTarget);
+    const pendingEntry = db.prepare(`
+      SELECT * FROM entries
+      WHERE round_id = ? AND status = 'PENDING' AND (id = ? OR number = ?)
+    `).get(currentRound.id, cleanTarget, cleanNum);
+
+    if (!pendingEntry) {
+      return { success: false, status: 404, error: 'Pending entry request not found or already processed.' };
+    }
+
+    const prize = currentRound.prize_id
+      ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
+      : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
+    const isWeightedCash = prize?.prize_type === 'weighted_cash';
+    const isCashRound = Boolean(prize?.prize_type === 'cash_multiplier' || isWeightedCash);
+
+    let finalBetAmount = Number(pendingEntry.bet_amount) || 0;
+    if (betAmount !== null && betAmount !== undefined && Number.isFinite(Number(betAmount))) {
+      finalBetAmount = Math.round(Number(betAmount) * 100) / 100;
+    }
+    if (isCashRound && finalBetAmount < 5) {
+      finalBetAmount = isWeightedCash ? 10 : 5;
+    }
+    const finalPayoutAmount = isCashRound
+      ? (isWeightedCash ? finalBetAmount : Math.round(finalBetAmount * 1.5 * 100) / 100)
+      : 0;
+
+    const nowIso = new Date().toISOString();
+    const txId = pendingEntry.tx_id || generateTransactionId(session.short_code);
+
+    db.prepare(`
+      UPDATE entries
+      SET status = 'ACTIVE', bet_amount = ?, payout_amount = ?, tx_id = ?, claimed_at = ?
+      WHERE id = ?
+    `).run(finalBetAmount, finalPayoutAmount, txId, nowIso, pendingEntry.id);
+
+    this.syncEntryToMongo(pendingEntry.id);
+    const approvedEntry = db.prepare('SELECT * FROM entries WHERE id = ?').get(pendingEntry.id);
+
+    if (approvedEntry) {
+      recordHubEntryTransaction({
+        entry: approvedEntry,
+        session,
+        round: currentRound,
+        prize,
+        cashierName: 'Host Approved (Mobile QR)'
+      });
+    }
+
+    if (finalBetAmount > 0) {
+      logReserveLedger({
+        sessionId,
+        roundId: currentRound.id,
+        entryId: pendingEntry.id,
+        txId,
+        entryType: 'STAKE_RECEIVED',
+        amount: finalBetAmount,
+        committedDelta: 0,
+        notes: `Host accepted & verified R${finalBetAmount} stake for ${pendingEntry.nickname} on #${pendingEntry.number}`,
+        actorId: 'host'
+      });
+    }
+
+    logAudit(sessionId, 'HOST', 'host', 'HOST_ENTRY_APPROVED', {
+      entryId: pendingEntry.id,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname,
+      betAmount: finalBetAmount,
+      payoutAmount: finalPayoutAmount,
+      playerToken: pendingEntry.player_token,
+      txId
+    });
+
+    this.io.to(sessionId).emit('entry:approved', {
+      id: pendingEntry.id,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname,
+      playerToken: pendingEntry.player_token,
+      betAmount: finalBetAmount,
+      payoutAmount: finalPayoutAmount,
+      txId
+    });
+    this.io.to(sessionId).emit('entry:claimed', {
+      id: pendingEntry.id,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname,
+      playerToken: pendingEntry.player_token,
+      betAmount: finalBetAmount,
+      payoutAmount: finalPayoutAmount,
+      txId
+    });
+    this.broadcastSessionState(sessionId);
+
+    return {
+      success: true,
+      entry: approvedEntry,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname,
+      betAmount: finalBetAmount,
+      payoutAmount: finalPayoutAmount,
+      txId
+    };
+  }
+
+  // Host accepts all currently pending mobile /join entries at once
+  hostApproveAllEntries(sessionId) {
+    const currentRound = this.ensureCurrentRound(sessionId);
+    if (!currentRound) {
+      return { success: false, status: 400, error: 'No active round found.' };
+    }
+
+    const pendingList = db.prepare(`
+      SELECT id FROM entries WHERE round_id = ? AND status = 'PENDING' ORDER BY claimed_at ASC
+    `).all(currentRound.id);
+
+    let approvedCount = 0;
+    for (const row of pendingList) {
+      const res = this.hostApproveEntry(sessionId, row.id);
+      if (res.success) approvedCount += 1;
+    }
+
+    return {
+      success: true,
+      approvedCount
+    };
+  }
+
+  // Host rejects/declines an unpaid or unauthorized PENDING entry from /join
+  hostRejectEntry(sessionId, entryIdOrNumber, { reason = 'Declined by Host (unpaid/unauthorized)' } = {}) {
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) {
+      return { success: false, status: 404, error: 'Session not found.' };
+    }
+
+    const currentRound = this.ensureCurrentRound(sessionId);
+    if (!currentRound) {
+      return { success: false, status: 400, error: 'No active round found.' };
+    }
+
+    const cleanTarget = String(entryIdOrNumber || '').trim();
+    const cleanNum = normalizeWheelNumber(cleanTarget);
+    const pendingEntry = db.prepare(`
+      SELECT * FROM entries
+      WHERE round_id = ? AND status = 'PENDING' AND (id = ? OR number = ?)
+    `).get(currentRound.id, cleanTarget, cleanNum);
+
+    if (!pendingEntry) {
+      return { success: false, status: 404, error: 'Pending entry request not found.' };
+    }
+
+    db.prepare('DELETE FROM entries WHERE id = ?').run(pendingEntry.id);
+    deleteRecordFromMongo('entries', pendingEntry.id);
+
+    logAudit(sessionId, 'HOST', 'host', 'HOST_ENTRY_REJECTED', {
+      entryId: pendingEntry.id,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname,
+      betAmount: pendingEntry.bet_amount,
+      playerToken: pendingEntry.player_token,
+      reason
+    });
+
+    this.io.to(sessionId).emit('entry:rejected', {
+      id: pendingEntry.id,
+      number: pendingEntry.number,
+      nickname: pendingEntry.nickname,
+      playerToken: pendingEntry.player_token,
+      reason
+    });
+    this.broadcastSessionState(sessionId);
+
+    return {
+      success: true,
+      number: pendingEntry.number,
+      rejectedNickname: pendingEntry.nickname
+    };
   }
 
   // Host manually claims a number on behalf of a player without a phone
@@ -1739,15 +1929,20 @@ export class GameEngine {
 
     try {
       const existingEntry = db.prepare(`
-        SELECT * FROM entries WHERE round_id = ? AND number = ? AND status = 'ACTIVE'
+        SELECT * FROM entries WHERE round_id = ? AND number = ?
       `).get(currentRound.id, cleanNum);
 
       if (existingEntry) {
-        return {
-          success: false,
-          status: 409,
-          error: `Number #${cleanNum} is already claimed by ${existingEntry.nickname}!`
-        };
+        if (existingEntry.status === 'ACTIVE') {
+          return {
+            success: false,
+            status: 409,
+            error: `Number #${cleanNum} is already claimed by ${existingEntry.nickname}!`
+          };
+        }
+        // If there was an unapproved PENDING entry on this number and Host assigns a walk-in directly, replace the unapproved request
+        db.prepare('DELETE FROM entries WHERE id = ?').run(existingEntry.id);
+        deleteRecordFromMongo('entries', existingEntry.id);
       }
 
       const playerToken = 'host_pick_' + cleanNum + '_' + crypto.randomBytes(4).toString('hex');
@@ -1890,7 +2085,7 @@ export class GameEngine {
     };
   }
 
-  // Close registration (lock entries)
+  // Close registration (lock entries & automatically clear any unaccepted/unpaid PENDING requests)
   closeRegistration(sessionId) {
     const currentRound = this.ensureCurrentRound(sessionId);
 
@@ -1900,12 +2095,31 @@ export class GameEngine {
       return { success: false, error: `Cannot close registration when state is ${currentRound.status}.` };
     }
 
+    // Expire any unaccepted PENDING requests so unpaid entries are never registered
+    const unaccepted = db.prepare(`
+      SELECT id, number, nickname, player_token FROM entries
+      WHERE round_id = ? AND status = 'PENDING'
+    `).all(currentRound.id);
+    if (unaccepted.length > 0) {
+      db.prepare(`DELETE FROM entries WHERE round_id = ? AND status = 'PENDING'`).run(currentRound.id);
+      for (const p of unaccepted) {
+        deleteRecordFromMongo('entries', p.id);
+        this.io.to(sessionId).emit('entry:rejected', {
+          id: p.id,
+          number: p.number,
+          nickname: p.nickname,
+          playerToken: p.player_token,
+          reason: 'Registration locked before Host acceptance.'
+        });
+      }
+    }
+
     db.prepare(`UPDATE rounds SET status = 'REGISTRATION_CLOSED' WHERE id = ?`).run(currentRound.id);
     db.prepare(`UPDATE sessions SET status = 'REGISTRATION_CLOSED' WHERE id = ?`).run(sessionId);
     this.syncRoundToMongo(currentRound.id);
     this.syncSessionToMongo(sessionId);
 
-    logAudit(sessionId, 'HOST', 'host', 'REGISTRATION_CLOSED', { roundId: currentRound.id });
+    logAudit(sessionId, 'HOST', 'host', 'REGISTRATION_CLOSED', { roundId: currentRound.id, clearedPendingCount: unaccepted.length });
 
     this.io.to(sessionId).emit('registration:closed', { roundId: currentRound.id });
     this.broadcastSessionState(sessionId);
@@ -2631,7 +2845,7 @@ export class GameEngine {
       JOIN rounds r ON e.round_id = r.id
       LEFT JOIN prizes p ON r.prize_id = p.id
       LEFT JOIN redemptions red ON r.id = red.round_id
-      WHERE e.session_id = ?
+      WHERE e.session_id = ? AND e.status != 'PENDING'
       ORDER BY e.claimed_at DESC
       LIMIT 200
     `).all(sessionId);
