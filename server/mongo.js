@@ -220,164 +220,199 @@ export async function syncWithChillaxGamingHub(sqliteDb) {
     hubCache.settings = settingsDoc ? (({ _id, __v, ...rest }) => rest)(settingsDoc) : null;
 
     // 2. Pull remote spin_* documents from MongoDB into local query cache (using ON CONFLICT DO UPDATE so ON DELETE CASCADE never wipes child rounds/entries)
-    const remotePrizes = await SpinPrize.find({}).lean();
-    for (const p of remotePrizes) {
-      if (!p.id) continue;
-      try {
-        sqliteDb.prepare(`
-          INSERT INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
-            description = excluded.description,
-            prize_type = excluded.prize_type,
-            value = excluded.value,
-            color = excluded.color,
-            enabled = excluded.enabled,
-            stock_count = excluded.stock_count
-        `).run(
-          p.id,
-          p.name || 'Prize',
-          p.description || '',
-          p.prize_type || 'standard',
-          p.value || '',
-          p.color || '#06b6d4',
-          p.enabled !== undefined ? Number(p.enabled) : 1,
-          p.stock_count !== undefined ? Number(p.stock_count) : 99
-        );
-      } catch {}
-    }
+    const [remotePrizes, remoteSessions, remoteRounds, remoteEntries, remoteRedemptions] = await Promise.all([
+      SpinPrize.find({}).lean(),
+      SpinSession.find({}).lean(),
+      SpinRound.find({}).lean(),
+      SpinEntry.find({}).lean(),
+      SpinRedemption.find({}).lean()
+    ]);
 
-    const remoteSessions = await SpinSession.find({}).lean();
-    for (const s of remoteSessions) {
-      if (!s.id || !s.short_code) continue;
+    const txStarted = (() => {
       try {
-        const existingByCode = sqliteDb.prepare('SELECT id FROM sessions WHERE short_code = ? AND id != ?').get(s.short_code, s.id);
-        if (existingByCode) continue;
-        sqliteDb.prepare(`
-          INSERT INTO sessions (id, short_code, status, number_min, number_max, created_at, host_id, host_pin, tv_connected, tv_pairing_code, winner_mode, settings_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            short_code = excluded.short_code,
-            status = excluded.status,
-            number_min = excluded.number_min,
-            number_max = excluded.number_max,
-            host_id = excluded.host_id,
-            host_pin = excluded.host_pin,
-            tv_connected = excluded.tv_connected,
-            tv_pairing_code = excluded.tv_pairing_code,
-            winner_mode = excluded.winner_mode,
-            settings_json = excluded.settings_json
-        `).run(
-          s.id,
-          s.short_code,
-          s.status || 'IDLE',
-          Number(s.number_min) || 1,
-          Number(s.number_max) || 20,
-          s.created_at || new Date().toISOString(),
-          s.host_id || 'host_default',
-          s.host_pin || '1234',
-          Number(s.tv_connected) || 0,
-          s.tv_pairing_code || null,
-          s.winner_mode || 'TRUE_ODDS',
-          s.settings_json || '{}'
-        );
-      } catch {}
-    }
+        sqliteDb.exec('BEGIN IMMEDIATE;');
+        return true;
+      } catch {
+        return false;
+      }
+    })();
 
-    const remoteRounds = await SpinRound.find({}).lean();
-    for (const r of remoteRounds) {
-      if (!r.id || !r.session_id) continue;
-      try {
-        sqliteDb.prepare(`
-          INSERT INTO rounds (id, session_id, round_number, status, prize_id, prize_snapshot_json, winning_number, winning_entry_id, applied_multiplier, started_at, result_at, cancelled_at, cancel_reason, idempotency_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            round_number = excluded.round_number,
-            status = excluded.status,
-            prize_id = excluded.prize_id,
-            prize_snapshot_json = excluded.prize_snapshot_json,
-            winning_number = excluded.winning_number,
-            winning_entry_id = excluded.winning_entry_id,
-            applied_multiplier = excluded.applied_multiplier,
-            started_at = excluded.started_at,
-            result_at = excluded.result_at,
-            cancelled_at = excluded.cancelled_at,
-            cancel_reason = excluded.cancel_reason,
-            idempotency_key = excluded.idempotency_key
-        `).run(
-          r.id,
-          r.session_id,
-          Number(r.round_number) || 1,
-          r.status || 'IDLE',
-          r.prize_id || null,
-          r.prize_snapshot_json || null,
-          r.winning_number !== undefined && r.winning_number !== null ? normalizeWheelNumber(r.winning_number) : null,
-          r.winning_entry_id || null,
-          Number(r.applied_multiplier) || 0,
-          r.started_at || null,
-          r.result_at || null,
-          r.cancelled_at || null,
-          r.cancel_reason || null,
-          r.idempotency_key || null
-        );
-      } catch {}
-    }
+    try {
+      for (const p of remotePrizes) {
+        if (!p.id) continue;
+        try {
+          sqliteDb.prepare(`
+            INSERT INTO prizes (id, name, description, prize_type, value, color, enabled, stock_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              description = excluded.description,
+              prize_type = excluded.prize_type,
+              value = excluded.value,
+              color = excluded.color,
+              enabled = excluded.enabled,
+              stock_count = excluded.stock_count
+          `).run(
+            p.id,
+            p.name || 'Prize',
+            p.description || '',
+            p.prize_type || 'standard',
+            p.value || '',
+            p.color || '#06b6d4',
+            p.enabled !== undefined ? Number(p.enabled) : 1,
+            p.stock_count !== undefined ? Number(p.stock_count) : 99
+          );
+        } catch {}
+      }
 
-    const remoteEntries = await SpinEntry.find({}).lean();
-    for (const e of remoteEntries) {
-      if (!e.id || !e.session_id || !e.round_id) continue;
-      try {
-        sqliteDb.prepare(`
-          INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, claimed_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            number = excluded.number,
-            nickname = excluded.nickname,
-            bet_amount = excluded.bet_amount,
-            payout_amount = excluded.payout_amount,
-            status = excluded.status
-        `).run(
-          e.id,
-          e.session_id,
-          e.round_id,
-          normalizeWheelNumber(e.number),
-          e.player_token,
-          e.nickname || 'Player',
-          Number(e.bet_amount) || 0,
-          Number(e.payout_amount) || 0,
-          e.claimed_at || new Date().toISOString(),
-          e.status || 'ACTIVE'
-        );
-      } catch {}
-    }
+      for (const s of remoteSessions) {
+        if (!s.id || !s.short_code) continue;
+        try {
+          const existingByCode = sqliteDb.prepare('SELECT id FROM sessions WHERE short_code = ? AND id != ?').get(s.short_code, s.id);
+          if (existingByCode) continue;
+          sqliteDb.prepare(`
+            INSERT INTO sessions (id, short_code, status, number_min, number_max, created_at, host_id, host_pin, tv_connected, tv_pairing_code, winner_mode, has_double_zero, wheel_numbers_json, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              short_code = excluded.short_code,
+              status = excluded.status,
+              number_min = excluded.number_min,
+              number_max = excluded.number_max,
+              host_id = excluded.host_id,
+              host_pin = excluded.host_pin,
+              tv_connected = excluded.tv_connected,
+              tv_pairing_code = excluded.tv_pairing_code,
+              winner_mode = excluded.winner_mode,
+              has_double_zero = excluded.has_double_zero,
+              wheel_numbers_json = COALESCE(excluded.wheel_numbers_json, sessions.wheel_numbers_json),
+              settings_json = excluded.settings_json
+          `).run(
+            s.id,
+            s.short_code,
+            s.status || 'IDLE',
+            Number(s.number_min) || 1,
+            Number(s.number_max) || 20,
+            s.created_at || new Date().toISOString(),
+            s.host_id || 'host_default',
+            s.host_pin || '1234',
+            Number(s.tv_connected) || 0,
+            s.tv_pairing_code || null,
+            s.winner_mode || 'TRUE_ODDS',
+            s.has_double_zero !== undefined ? Number(s.has_double_zero) : 1,
+            s.wheel_numbers_json || null,
+            s.settings_json || '{}'
+          );
+        } catch {}
+      }
 
-    const remoteRedemptions = await SpinRedemption.find({}).lean();
-    for (const red of remoteRedemptions) {
-      if (!red.id || !red.round_id) continue;
-      try {
-        sqliteDb.prepare(`
-          INSERT INTO redemptions (id, round_id, prize_id, redeemed_by, redeemed_at, status, notes)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            redeemed_by = excluded.redeemed_by,
-            redeemed_at = excluded.redeemed_at,
-            status = excluded.status,
-            notes = excluded.notes
-        `).run(
-          red.id,
-          red.round_id,
-          red.prize_id || 'prize_default',
-          red.redeemed_by || 'Staff Host',
-          red.redeemed_at || new Date().toISOString(),
-          red.status || 'REDEEMED',
-          red.notes || ''
-        );
-      } catch {}
+      for (const r of remoteRounds) {
+        if (!r.id || !r.session_id) continue;
+        try {
+          sqliteDb.prepare(`
+            INSERT INTO rounds (id, session_id, round_number, status, prize_id, prize_snapshot_json, winning_number, winning_entry_id, applied_multiplier, redemption_code, prize_tier_label, started_at, result_at, cancelled_at, cancel_reason, idempotency_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              round_number = excluded.round_number,
+              status = excluded.status,
+              prize_id = excluded.prize_id,
+              prize_snapshot_json = excluded.prize_snapshot_json,
+              winning_number = excluded.winning_number,
+              winning_entry_id = excluded.winning_entry_id,
+              applied_multiplier = excluded.applied_multiplier,
+              redemption_code = COALESCE(excluded.redemption_code, rounds.redemption_code),
+              prize_tier_label = COALESCE(excluded.prize_tier_label, rounds.prize_tier_label),
+              started_at = excluded.started_at,
+              result_at = excluded.result_at,
+              cancelled_at = excluded.cancelled_at,
+              cancel_reason = excluded.cancel_reason,
+              idempotency_key = excluded.idempotency_key
+          `).run(
+            r.id,
+            r.session_id,
+            Number(r.round_number) || 1,
+            r.status || 'IDLE',
+            r.prize_id || null,
+            r.prize_snapshot_json || null,
+            r.winning_number !== undefined && r.winning_number !== null ? normalizeWheelNumber(r.winning_number) : null,
+            r.winning_entry_id || null,
+            Number(r.applied_multiplier) || 0,
+            r.redemption_code || null,
+            r.prize_tier_label || null,
+            r.started_at || null,
+            r.result_at || null,
+            r.cancelled_at || null,
+            r.cancel_reason || null,
+            r.idempotency_key || null
+          );
+        } catch {}
+      }
+
+      for (const e of remoteEntries) {
+        if (!e.id || !e.session_id || !e.round_id) continue;
+        try {
+          sqliteDb.prepare(`
+            INSERT INTO entries (id, session_id, round_id, number, player_token, nickname, bet_amount, payout_amount, tx_id, age_verified, claimed_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              number = excluded.number,
+              nickname = excluded.nickname,
+              bet_amount = excluded.bet_amount,
+              payout_amount = excluded.payout_amount,
+              tx_id = COALESCE(excluded.tx_id, entries.tx_id),
+              age_verified = excluded.age_verified,
+              status = excluded.status
+          `).run(
+            e.id,
+            e.session_id,
+            e.round_id,
+            normalizeWheelNumber(e.number),
+            e.player_token,
+            e.nickname || 'Player',
+            Number(e.bet_amount) || 0,
+            Number(e.payout_amount) || 0,
+            e.tx_id || null,
+            e.age_verified !== undefined ? Number(e.age_verified) : 1,
+            e.claimed_at || new Date().toISOString(),
+            e.status || 'ACTIVE'
+          );
+        } catch {}
+      }
+
+      for (const red of remoteRedemptions) {
+        if (!red.id || !red.round_id) continue;
+        try {
+          sqliteDb.prepare(`
+            INSERT INTO redemptions (id, round_id, prize_id, redeemed_by, redeemed_at, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              redeemed_by = excluded.redeemed_by,
+              redeemed_at = excluded.redeemed_at,
+              status = excluded.status,
+              notes = excluded.notes
+          `).run(
+            red.id,
+            red.round_id,
+            red.prize_id || 'prize_default',
+            red.redeemed_by || 'Staff Host',
+            red.redeemed_at || new Date().toISOString(),
+            red.status || 'REDEEMED',
+            red.notes || ''
+          );
+        } catch {}
+      }
+
+      if (txStarted) {
+        sqliteDb.exec('COMMIT;');
+      }
+    } catch (txErr) {
+      if (txStarted) {
+        try { sqliteDb.exec('ROLLBACK;'); } catch {}
+      }
+      throw txErr;
     }
 
     // 3. Push local records to MongoDB `chillaxgaminghub` (upsert)
-    const tablesToPush = ['prizes', 'sessions', 'rounds', 'entries', 'redemptions', 'audit_events'];
+    const tablesToPush = ['prizes', 'sessions', 'rounds', 'entries', 'redemptions', 'audit_events', 'daily_profit_reports'];
     for (const table of tablesToPush) {
       const rows = sqliteDb.prepare(`SELECT * FROM ${table}`).all();
       const Model = SPIN_MODELS[table];

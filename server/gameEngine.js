@@ -312,6 +312,24 @@ export class GameEngine {
   constructor(io) {
     this.io = io;
     this.failedPinAttempts = new Map(); // ip -> { count, lockedUntil }
+    this.recoverStuckSpinningRounds();
+  }
+
+  // Self-heal any rounds left stuck in 'SPINNING' if the server restarted mid-spin
+  recoverStuckSpinningRounds(minAgeMs = 0) {
+    try {
+      const stuckRounds = db.prepare(`SELECT id, started_at FROM rounds WHERE status = 'SPINNING'`).all();
+      const nowMs = Date.now();
+      for (const r of stuckRounds) {
+        const startedMs = r.started_at ? Date.parse(r.started_at) : 0;
+        if (minAgeMs > 0 && startedMs && (nowMs - startedMs) < minAgeMs) {
+          continue;
+        }
+        this.finalizeRoundToResult(r.id);
+      }
+    } catch (err) {
+      console.warn('[GameEngine] Recover stuck rounds warning:', err.message);
+    }
   }
 
   // Rate-limiting helper for host PIN attempts (also accepts PINs from chillaxgaminghub users/settings)
@@ -452,12 +470,22 @@ export class GameEngine {
     // Include active stakes in the current open/closed round when computing live daily collections
     let currentRoundBets = 0;
     let currentRoundEntriesCount = 0;
+    let isCurrentWeightedCash = false;
     const openRound = db.prepare(`
-      SELECT id FROM rounds
-      WHERE session_id = ? AND status IN ('REGISTRATION_OPEN', 'REGISTRATION_CLOSED')
-      ORDER BY round_number DESC LIMIT 1
+      SELECT r.id, r.prize_id, r.prize_snapshot_json, p.prize_type
+      FROM rounds r
+      LEFT JOIN prizes p ON r.prize_id = p.id
+      WHERE r.session_id = ? AND r.status IN ('REGISTRATION_OPEN', 'REGISTRATION_CLOSED')
+      ORDER BY r.round_number DESC LIMIT 1
     `).get(sessionId);
     if (openRound && (!excludeRoundId || openRound.id !== excludeRoundId)) {
+      let openPrizeType = openRound.prize_type;
+      if (!openPrizeType && openRound.prize_snapshot_json) {
+        try {
+          openPrizeType = JSON.parse(openRound.prize_snapshot_json)?.prize_type;
+        } catch {}
+      }
+      isCurrentWeightedCash = openPrizeType === 'weighted_cash';
       const openRow = db.prepare(`
         SELECT COALESCE(SUM(bet_amount), 0) as total, COUNT(*) as cnt
         FROM entries
@@ -540,10 +568,11 @@ export class GameEngine {
     const unlockedWeightedTiers = [10, 20, 50, 100].filter((t) => t <= maxPrizeThisRound);
     const unlockedMultipliers = [1.5, 2, 3].filter((m) => (5 * m) <= maxPrizeThisRound);
     const maxWinnerShareRatio = Math.max(0.1, 1 - targetProfitRatio);
-    const amountNeededForNextWinner = maxPrizeThisRound >= 10
+    const minCashWinTarget = isCurrentWeightedCash ? 10 : 7.5;
+    const amountNeededForNextWinner = maxPrizeThisRound >= minCashWinTarget
       ? 0
-      : Math.max(5, Math.ceil((10 + prizesToday - (maxWinnerShareRatio * collectedToday)) / maxWinnerShareRatio));
-    const dailyGuardStatus = maxPrizeThisRound < 10
+      : Math.max(5, Math.ceil((minCashWinTarget + prizesToday - (maxWinnerShareRatio * collectedToday)) / maxWinnerShareRatio));
+    const dailyGuardStatus = maxPrizeThisRound < minCashWinTarget
       ? (prizesToday > 0 ? 'PAUSED' : 'BUILDING_PROFIT')
       : (dailyMarginPct >= 40 ? 'HEALTHY' : 'WATCH');
 
@@ -576,6 +605,7 @@ export class GameEngine {
 
     return {
       historicalCollected: cleanCollected,
+      allTimeCollected: Math.round((cleanCollected + currentRoundBets) * 100) / 100,
       historicalPaidOut: cleanCommitted,
       settledCashPaid: Math.round(settledCashPaid * 100) / 100,
       outstandingCashLiabilities: Math.round(outstandingCashLiabilities * 100) / 100,
@@ -1012,13 +1042,47 @@ export class GameEngine {
       ? (hasDoubleZero ? 1 : 0)
       : (session.has_double_zero !== 0 ? 1 : 0);
 
-    let wheelNumbersJson = null;
-    if (Array.isArray(customNumbers) && customNumbers.length > 0) {
-      wheelNumbersJson = JSON.stringify(customNumbers.map(String));
-    } else {
-      wheelNumbersJson = JSON.stringify(
-        buildWheelNumbers({ min: session.number_min || 1, max: validMax, hasDoubleZero: Boolean(useDoubleZero) })
-      );
+    const newWheelList = (Array.isArray(customNumbers) && customNumbers.length > 0)
+      ? customNumbers.map((n) => normalizeWheelNumber(n))
+      : buildWheelNumbers({ min: session.number_min || 1, max: validMax, hasDoubleZero: Boolean(useDoubleZero) });
+    const wheelNumbersJson = JSON.stringify(newWheelList);
+    const allowedSet = new Set(newWheelList.map((n) => String(n)));
+
+    const currentRound = db.prepare(`
+      SELECT * FROM rounds WHERE session_id = ? ORDER BY round_number DESC LIMIT 1
+    `).get(sessionId);
+
+    if (currentRound && currentRound.status === 'REGISTRATION_OPEN') {
+      const activeEntries = db.prepare(`
+        SELECT number, nickname FROM entries WHERE round_id = ? AND status = 'ACTIVE'
+      `).all(currentRound.id);
+      const conflictingActive = activeEntries.filter((e) => !allowedSet.has(normalizeWheelNumber(e.number)));
+      if (conflictingActive.length > 0) {
+        const listStr = conflictingActive.map((e) => `#${e.number} (${e.nickname})`).join(', ');
+        return {
+          success: false,
+          status: 409,
+          error: `Cannot shrink wheel while claimed numbers are active: ${listStr}. Refund/free them first or apply on Next Round.`
+        };
+      }
+
+      // Clean up any PENDING mobile requests whose numbers no longer exist on the new wheel
+      const pendingEntries = db.prepare(`
+        SELECT id, number, nickname, player_token FROM entries WHERE round_id = ? AND status = 'PENDING'
+      `).all(currentRound.id);
+      for (const p of pendingEntries) {
+        if (!allowedSet.has(normalizeWheelNumber(p.number))) {
+          db.prepare('DELETE FROM entries WHERE id = ?').run(p.id);
+          deleteRecordFromMongo('entries', p.id);
+          this.io.to(sessionId).emit('entry:rejected', {
+            id: p.id,
+            number: p.number,
+            nickname: p.nickname,
+            playerToken: p.player_token,
+            reason: 'Wheel range changed by Host before acceptance.'
+          });
+        }
+      }
     }
 
     let settings = {};
@@ -1082,6 +1146,12 @@ export class GameEngine {
       this.syncSessionToMongo(sessionId);
 
       currentRound = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+    } else if (currentRound.status === 'SPINNING' && currentRound.started_at) {
+      const elapsedMs = Date.now() - Date.parse(currentRound.started_at);
+      if (!Number.isNaN(elapsedMs) && elapsedMs > 12000) {
+        this.finalizeRoundToResult(currentRound.id);
+        currentRound = db.prepare('SELECT * FROM rounds WHERE id = ?').get(currentRound.id);
+      }
     }
 
     return currentRound;
@@ -2323,62 +2393,7 @@ export class GameEngine {
 
     // Schedule authoritative transition to RESULT state when spin ends
     setTimeout(() => {
-      const activeRound = db.prepare('SELECT * FROM rounds WHERE id = ?').get(currentRound.id);
-      if (activeRound && activeRound.status === 'SPINNING') {
-        const resultTime = new Date().toISOString();
-        db.prepare(`UPDATE rounds SET status = 'RESULT', result_at = ? WHERE id = ?`).run(resultTime, currentRound.id);
-        db.prepare(`UPDATE sessions SET status = 'RESULT' WHERE id = ?`).run(sessionId);
-        this.syncRoundToMongo(currentRound.id);
-        this.syncSessionToMongo(sessionId);
-
-        // Fetch prize only if there is an active winning entry
-        const prize = winningEntry
-          ? (activeRound.prize_id 
-              ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(activeRound.prize_id)
-              : (activeRound.prize_snapshot_json ? JSON.parse(activeRound.prize_snapshot_json) : null))
-          : null;
-
-        // Sync every entry's final outcome (winner payout, redemption code) to chillaxgaminghub.transactions
-        for (const ent of entries) {
-          const isWin = Boolean(winningEntry && winningEntry.id === ent.id);
-          const entPayout = isWin ? (Number(winningEntry.payout_amount) || 0) : 0;
-          recordHubEntryTransaction({
-            entry: isWin ? { ...ent, payout_amount: entPayout } : ent,
-            session,
-            round: { ...activeRound, prize_tier_label: prizeTierLabel },
-            prize: roundPrize,
-            isWinner: isWin,
-            payoutAmount: entPayout,
-            appliedMultiplier: isWin ? appliedMultiplier : 0,
-            redemptionCode: isWin ? redemptionCode : null
-          });
-        }
-
-        logAudit(sessionId, 'SERVER', 'engine', 'SPIN_RESULT', {
-          winningNumber,
-          appliedMultiplier,
-          prizeTierLabel,
-          redemptionCode,
-          hasWinner: Boolean(winningEntry),
-          winningPlayer: winningEntry ? winningEntry.nickname : null,
-          winningToken: winningEntry ? winningEntry.player_token : null
-        });
-
-        this.io.to(sessionId).emit('spin:result', {
-          roundId: currentRound.id,
-          winningNumber,
-          appliedMultiplier,
-          prizeTierLabel,
-          redemptionCode,
-          hasWinner: Boolean(winningEntry),
-          winnerNickname: winningEntry ? winningEntry.nickname : null,
-          winnerToken: winningEntry ? winningEntry.player_token : null,
-          winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
-          winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
-          prize
-        });
-        this.broadcastSessionState(sessionId);
-      }
+      this.finalizeRoundToResult(currentRound.id);
     }, spinDurationMs);
 
     return {
@@ -2393,6 +2408,77 @@ export class GameEngine {
       winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
       winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0
     };
+  }
+
+  // Authoritative transition from SPINNING -> RESULT (shared by timer & crash recovery)
+  finalizeRoundToResult(roundId) {
+    const activeRound = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+    if (!activeRound || activeRound.status !== 'SPINNING') return null;
+
+    const sessionId = activeRound.session_id;
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (!session) return null;
+
+    const resultTime = new Date().toISOString();
+    db.prepare(`UPDATE rounds SET status = 'RESULT', result_at = ? WHERE id = ?`).run(resultTime, roundId);
+    db.prepare(`UPDATE sessions SET status = 'RESULT' WHERE id = ?`).run(sessionId);
+    this.syncRoundToMongo(roundId);
+    this.syncSessionToMongo(sessionId);
+
+    const roundPrize = activeRound.prize_id
+      ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(activeRound.prize_id)
+      : (activeRound.prize_snapshot_json ? JSON.parse(activeRound.prize_snapshot_json) : null);
+
+    const winningEntry = activeRound.winning_entry_id
+      ? db.prepare('SELECT * FROM entries WHERE id = ?').get(activeRound.winning_entry_id)
+      : null;
+
+    const prize = winningEntry ? roundPrize : null;
+    const entries = db.prepare(`
+      SELECT * FROM entries WHERE round_id = ? AND status = 'ACTIVE' ORDER BY number ASC
+    `).all(roundId);
+
+    // Sync every entry's final outcome (winner payout, redemption code) to chillaxgaminghub.transactions
+    for (const ent of entries) {
+      const isWin = Boolean(winningEntry && winningEntry.id === ent.id);
+      const entPayout = isWin ? (Number(winningEntry.payout_amount) || 0) : 0;
+      recordHubEntryTransaction({
+        entry: isWin ? { ...ent, payout_amount: entPayout } : ent,
+        session,
+        round: activeRound,
+        prize: roundPrize,
+        isWinner: isWin,
+        payoutAmount: entPayout,
+        appliedMultiplier: isWin ? (Number(activeRound.applied_multiplier) || 0) : 0,
+        redemptionCode: isWin ? (activeRound.redemption_code || null) : null
+      });
+    }
+
+    logAudit(sessionId, 'SERVER', 'engine', 'SPIN_RESULT', {
+      winningNumber: activeRound.winning_number,
+      appliedMultiplier: Number(activeRound.applied_multiplier) || 0,
+      prizeTierLabel: activeRound.prize_tier_label || null,
+      redemptionCode: activeRound.redemption_code || null,
+      hasWinner: Boolean(winningEntry),
+      winningPlayer: winningEntry ? winningEntry.nickname : null,
+      winningToken: winningEntry ? winningEntry.player_token : null
+    });
+
+    this.io.to(sessionId).emit('spin:result', {
+      roundId: activeRound.id,
+      winningNumber: activeRound.winning_number,
+      appliedMultiplier: Number(activeRound.applied_multiplier) || 0,
+      prizeTierLabel: activeRound.prize_tier_label || null,
+      redemptionCode: activeRound.redemption_code || null,
+      hasWinner: Boolean(winningEntry),
+      winnerNickname: winningEntry ? winningEntry.nickname : null,
+      winnerToken: winningEntry ? winningEntry.player_token : null,
+      winnerBetAmount: winningEntry ? (Number(winningEntry.bet_amount) || 0) : 0,
+      winnerPayoutAmount: winningEntry ? (Number(winningEntry.payout_amount) || 0) : 0,
+      prize
+    });
+    this.broadcastSessionState(sessionId);
+    return activeRound;
   }
 
   // Update active round prize (enforces Reserve Rule: never change prize/odds after customers have paid)
@@ -2534,6 +2620,23 @@ export class GameEngine {
     if (!round) return { success: false, error: 'Round not found.' };
 
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    const pendingEntries = db.prepare(`
+      SELECT id, number, nickname, player_token FROM entries WHERE round_id = ? AND status = 'PENDING'
+    `).all(roundId);
+    if (pendingEntries.length > 0) {
+      db.prepare(`DELETE FROM entries WHERE round_id = ? AND status = 'PENDING'`).run(roundId);
+      for (const p of pendingEntries) {
+        deleteRecordFromMongo('entries', p.id);
+        this.io.to(sessionId).emit('entry:rejected', {
+          id: p.id,
+          number: p.number,
+          nickname: p.nickname,
+          playerToken: p.player_token,
+          reason: `Round cancelled: ${reason}`
+        });
+      }
+    }
+
     const activeEntries = db.prepare(`
       SELECT * FROM entries WHERE round_id = ? AND status = 'ACTIVE'
     `).all(roundId);

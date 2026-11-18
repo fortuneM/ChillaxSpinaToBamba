@@ -28,6 +28,12 @@ export function ArcadeWheel({
   const [rotation, setRotation] = useState(0);
   const currentRotationRef = useRef(0);
   const isCurrentlySpinningRef = useRef(false);
+  const spinTimerRef = useRef(null);
+  const onSpinCompleteRef = useRef(onSpinComplete);
+
+  useEffect(() => {
+    onSpinCompleteRef.current = onSpinComplete;
+  }, [onSpinComplete]);
 
   // Build wheel numbers with 0 at the top (12 o'clock) and 00 directly opposite (6 o'clock)
   const numbers = useMemo(() => {
@@ -95,7 +101,7 @@ export function ArcadeWheel({
     return list;
   }, [numbers, totalSegments, claimedNumbers, winningNumber]);
 
-  // Handle spin trigger
+  // Handle spin trigger (never cancel spin completion timer when parent callbacks re-render)
   useEffect(() => {
     if (isSpinning && winningNumber !== null && !isCurrentlySpinningRef.current) {
       isCurrentlySpinningRef.current = true;
@@ -120,16 +126,34 @@ export function ArcadeWheel({
       currentRotationRef.current = finalRotation;
       setRotation(finalRotation);
 
-      const timer = setTimeout(() => {
+      if (spinTimerRef.current) {
+        clearTimeout(spinTimerRef.current);
+      }
+      spinTimerRef.current = setTimeout(() => {
+        spinTimerRef.current = null;
         isCurrentlySpinningRef.current = false;
         sounds.stopSpinSounds();
-        sounds.playFanfare();
-        onSpinComplete();
+        onSpinCompleteRef.current?.();
       }, spinDurationMs);
-
-      return () => clearTimeout(timer);
+    } else if (!isSpinning && isCurrentlySpinningRef.current) {
+      isCurrentlySpinningRef.current = false;
+      if (spinTimerRef.current) {
+        clearTimeout(spinTimerRef.current);
+        spinTimerRef.current = null;
+      }
+      sounds.stopSpinSounds();
     }
-  }, [isSpinning, winningNumber, numbers, segmentAngle, spinDurationMs, onSpinComplete]);
+  }, [isSpinning, winningNumber, numbers, segmentAngle, spinDurationMs]);
+
+  // Ensure timers & audio stop cleanly if unmounted
+  useEffect(() => {
+    return () => {
+      if (spinTimerRef.current) {
+        clearTimeout(spinTimerRef.current);
+      }
+      sounds.stopSpinSounds();
+    };
+  }, []);
 
   // Create SVG slice path centered on slice k
   const createSlicePath = (index, r) => {
@@ -162,7 +186,8 @@ export function ArcadeWheel({
     const x4 = radius + rInner * Math.cos(startAngle);
     const y4 = radius + rInner * Math.sin(startAngle);
 
-    return `M ${x1} ${y1} A ${rOuter} ${rOuter} 0 0 1 ${x2} ${y2} L ${x3} ${y3} A ${rInner} ${rInner} 0 0 0 ${x4} ${y4} Z`;
+    const largeArc = segmentAngle > 180 ? 1 : 0;
+    return `M ${x1} ${y1} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${rInner} ${rInner} 0 ${largeArc} 0 ${x4} ${y4} Z`;
   };
 
   // 24 Marquee LED lights around the outer casino bezel

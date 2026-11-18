@@ -600,6 +600,14 @@ app.get(['/lock.apk', '/chillax-lock.apk'], (req, res) => {
 const distPath = path.join(__dirname, '..', 'dist');
 app.use(express.static(distPath));
 
+// Return JSON 404 for unknown API endpoints instead of falling through to SPA HTML
+app.all('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: `API endpoint not found: ${req.method} ${req.path}`
+  });
+});
+
 // Fallback to index.html for SPA routes (/tv, /host, /join)
 app.get('*', (req, res) => {
   const indexPath = path.join(distPath, 'index.html');

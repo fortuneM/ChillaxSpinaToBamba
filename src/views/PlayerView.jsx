@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getSocket, getPlayerToken, getSavedNickname, saveNickname } from '../utils/socket';
 import { sounds } from '../utils/sound';
 import confetti from 'canvas-confetti';
-import { Check, Lock, Sparkles, Award, User, RefreshCw, AlertCircle, Trophy, Zap, Ticket, ShieldCheck, Clock, XCircle } from 'lucide-react';
+import { Check, Lock, Sparkles, Award, User, RefreshCw, AlertCircle, Trophy, Zap, Ticket, ShieldCheck, Clock, XCircle, LogOut } from 'lucide-react';
 
 export function PlayerView() {
   const [code, setCode] = useState('');
@@ -14,17 +14,24 @@ export function PlayerView() {
   const [isClaiming, setIsClaiming] = useState(false);
   const [betAmount, setBetAmount] = useState(10);
   const [ageVerified, setAgeVerified] = useState(true);
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const lastCelebratedRoundIdRef = useRef(null);
 
   const playerToken = getPlayerToken();
 
-  // Read URL search params on mount
+  // Read URL search params or saved shop code on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const codeParam = params.get('code');
+    const savedCode = localStorage.getItem('chillax_player_code');
     if (codeParam) {
       const cleanCode = codeParam.trim().toUpperCase();
       setCode(cleanCode);
       joinSession(cleanCode);
+    } else if (savedCode) {
+      const cleanSaved = savedCode.trim().toUpperCase();
+      setCode(cleanSaved);
+      joinSession(cleanSaved);
     }
   }, []);
 
@@ -33,14 +40,17 @@ export function PlayerView() {
     setLoading(true);
     setErrorMsg('');
     try {
-      const res = await fetch(`/api/sessions/find/${codeToJoin.trim().toUpperCase()}`);
+      const clean = codeToJoin.trim().toUpperCase();
+      const res = await fetch(`/api/sessions/find/${encodeURIComponent(clean)}`);
       if (!res.ok) {
         const err = await res.json();
         setErrorMsg(err.error || 'Session not found. Please verify game code.');
+        localStorage.removeItem('chillax_player_code');
         setLoading(false);
         return;
       }
       const data = await res.json();
+      localStorage.setItem('chillax_player_code', data.shopCode || data.shortCode || clean);
       setSession(data);
     } catch {
       setErrorMsg('Failed to connect to gaming center server.');
@@ -49,23 +59,47 @@ export function PlayerView() {
     }
   };
 
-  // Socket sync
+  const handleLeaveSession = () => {
+    localStorage.removeItem('chillax_player_code');
+    setSession(null);
+    setErrorMsg('');
+    setClaimSuccessMsg('');
+  };
+
+  // Socket sync with automatic reconnect room re-join
   useEffect(() => {
     if (!session?.sessionId) return;
     const socket = getSocket();
 
-    socket.emit('join:session', {
-      sessionId: session.sessionId,
-      role: 'player'
-    });
+    const joinRoom = () => {
+      setIsSocketConnected(true);
+      socket.emit('join:session', {
+        sessionId: session.sessionId,
+        role: 'player'
+      });
+    };
+
+    const handleDisconnect = () => {
+      setIsSocketConnected(false);
+    };
+
+    if (socket.connected) {
+      joinRoom();
+    }
 
     const handleState = (newState) => {
       setSession(newState);
-      if (newState.status === 'RESULT') {
+      if (newState.status === 'RESULT' && newState.currentRound?.id) {
         const myClaim = newState.entries?.find(e => e.player_token === playerToken);
-        if (myClaim && String(myClaim.number) === String(newState.currentRound?.winningNumber)) {
+        if (
+          myClaim &&
+          String(myClaim.number) === String(newState.currentRound?.winningNumber) &&
+          lastCelebratedRoundIdRef.current !== newState.currentRound.id
+        ) {
+          lastCelebratedRoundIdRef.current = newState.currentRound.id;
           triggerPlayerConfetti();
           sounds.playFanfare();
+          try { navigator.vibrate?.([80, 40, 120]); } catch {}
         }
       }
     };
@@ -73,6 +107,7 @@ export function PlayerView() {
     const handleEntryApproved = (data) => {
       if (data?.playerToken === playerToken) {
         sounds.playClick();
+        try { navigator.vibrate?.(50); } catch {}
         setErrorMsg('');
         setClaimSuccessMsg(
           `✅ Host accepted your entry! Lucky Number #${data.number} is confirmed & locked in for this spin!`
@@ -90,10 +125,14 @@ export function PlayerView() {
       }
     };
 
+    socket.on('connect', joinRoom);
+    socket.on('disconnect', handleDisconnect);
     socket.on('session:state', handleState);
     socket.on('entry:approved', handleEntryApproved);
     socket.on('entry:rejected', handleEntryRejected);
     return () => {
+      socket.off('connect', joinRoom);
+      socket.off('disconnect', handleDisconnect);
       socket.off('session:state', handleState);
       socket.off('entry:approved', handleEntryApproved);
       socket.off('entry:rejected', handleEntryRejected);
@@ -303,9 +342,9 @@ export function PlayerView() {
   const myClaimedNumber = myActiveOrPending?.number;
   const isMyPickApproved = Boolean(myEntry);
   const isMyPickPending = Boolean(myPendingEntry && !myEntry);
-  const isWinner = status === 'RESULT' && currentRound?.hasWinner && myEntry?.number === currentRound?.winningNumber;
+  const isWinner = status === 'RESULT' && currentRound?.hasWinner && String(myEntry?.number) === String(currentRound?.winningNumber);
   const isNoWinner = status === 'RESULT' && !currentRound?.hasWinner;
-  const isLoser = status === 'RESULT' && currentRound?.hasWinner && myEntry?.number !== currentRound?.winningNumber;
+  const isLoser = status === 'RESULT' && currentRound?.hasWinner && String(myEntry?.number) !== String(currentRound?.winningNumber);
 
   // Grid displays 0 and 00 at the top row, followed by 1 to N
   const allWheelPockets = session?.wheelNumbers || [];
@@ -324,8 +363,19 @@ export function PlayerView() {
           <span className="player-bar-brand">{session.shopName || 'CHILLAX SPIN'}</span>
           <span className="player-bar-code">{session.shopCode || session.shortCode}</span>
         </div>
-        <div className="player-round-tag">
-          ROUND #{currentRound?.roundNumber || 1}
+        <div className="flex items-center gap-1">
+          <div className="player-round-tag" title={isSocketConnected ? 'Connected live' : 'Reconnecting...'}>
+            <span className={`pulse-dot ${isSocketConnected ? 'green' : 'amber'}`} style={{ marginRight: '5px' }} />
+            ROUND #{currentRound?.roundNumber || 1}
+          </div>
+          <button
+            type="button"
+            onClick={handleLeaveSession}
+            className="player-switch-shop-btn"
+            title="Switch Shop Code"
+          >
+            <LogOut size={14} />
+          </button>
         </div>
       </div>
 

@@ -12,9 +12,15 @@ export function TvView() {
   const [pairingError, setPairingError] = useState('');
   const [isSpinning, setIsSpinning] = useState(false);
   const [spinningResult, setSpinningResult] = useState(null);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const [isMuted, setIsMuted] = useState(() => {
+    const savedMute = localStorage.getItem('chillax_tv_muted') === 'true';
+    sounds.setMuted(savedMute);
+    return savedMute;
+  });
   const [qrCodeUrl, setQrCodeUrl] = useState('');
-  const confettiIntervalRef = useRef(null);
+  const confettiRafRef = useRef(null);
+  const lastCelebratedRoundIdRef = useRef(null);
 
   // Initialize and check URL query param (e.g. /tv?code=K7P4Q)
   useEffect(() => {
@@ -95,21 +101,35 @@ export function TvView() {
     }
   };
 
-  // Socket listener setup
+  // Socket listener setup with automatic reconnect room re-join
   useEffect(() => {
     if (!session?.sessionId) return;
     const socket = getSocket();
 
-    socket.emit('join:session', {
-      sessionId: session.sessionId,
-      role: 'tv'
-    });
+    const joinRoom = () => {
+      setIsSocketConnected(true);
+      socket.emit('join:session', {
+        sessionId: session.sessionId,
+        role: 'tv'
+      });
+    };
+
+    const handleDisconnect = () => {
+      setIsSocketConnected(false);
+    };
+
+    if (socket.connected) {
+      joinRoom();
+    }
 
     const handleState = (newState) => {
       setSession(newState);
+      if (newState?.shortCode && !qrCodeUrl) {
+        generateQrCode(newState.shortCode);
+      }
       if (newState.status === 'SPINNING') {
         setIsSpinning(true);
-      } else if (newState.status !== 'SPINNING') {
+      } else {
         setIsSpinning(false);
       }
     };
@@ -120,6 +140,12 @@ export function TvView() {
     };
 
     const handleSpinResult = (data) => {
+      if (data?.roundId && lastCelebratedRoundIdRef.current === data.roundId) {
+        return;
+      }
+      if (data?.roundId) {
+        lastCelebratedRoundIdRef.current = data.roundId;
+      }
       if (data.hasWinner) {
         triggerConfetti();
         sounds.playFanfare();
@@ -128,23 +154,44 @@ export function TvView() {
       }
     };
 
+    socket.on('connect', joinRoom);
+    socket.on('disconnect', handleDisconnect);
     socket.on('session:state', handleState);
     socket.on('spin:started', handleSpinStarted);
     socket.on('spin:result', handleSpinResult);
 
     return () => {
+      socket.off('connect', joinRoom);
+      socket.off('disconnect', handleDisconnect);
       socket.off('session:state', handleState);
       socket.off('spin:started', handleSpinStarted);
       socket.off('spin:result', handleSpinResult);
     };
-  }, [session?.sessionId]);
+  }, [session?.sessionId, qrCodeUrl]);
+
+  // Unlock Web Audio on first user/remote interaction & clean up animations on unmount
+  useEffect(() => {
+    const unlockAudio = () => sounds.init();
+    window.addEventListener('pointerdown', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+      if (confettiRafRef.current) {
+        cancelAnimationFrame(confettiRafRef.current);
+      }
+    };
+  }, []);
 
   const triggerConfetti = useCallback(() => {
     try {
+      if (confettiRafRef.current) {
+        cancelAnimationFrame(confettiRafRef.current);
+      }
       const end = Date.now() + 5000;
       const colors = ['#00f2fe', '#8b5cf6', '#f59e0b', '#ec4899', '#10b981', '#fef08a'];
 
-      (function frame() {
+      const frame = () => {
         confetti({
           particleCount: 5,
           angle: 60,
@@ -161,16 +208,24 @@ export function TvView() {
         });
 
         if (Date.now() < end) {
-          requestAnimationFrame(frame);
+          confettiRafRef.current = requestAnimationFrame(frame);
+        } else {
+          confettiRafRef.current = null;
         }
-      })();
+      };
+      confettiRafRef.current = requestAnimationFrame(frame);
     } catch {}
   }, []);
 
   const handleToggleSound = () => {
     const muted = sounds.toggleMute();
+    localStorage.setItem('chillax_tv_muted', String(muted));
     setIsMuted(muted);
   };
+
+  const handleSpinComplete = useCallback(() => {
+    setIsSpinning(false);
+  }, []);
 
   // If TV is not yet paired with a session, display majestic pairing splash screen
   if (!session) {
@@ -288,6 +343,17 @@ export function TvView() {
         </div>
 
         <div className="tv-header-right">
+          <div
+            className="tv-pool-pill"
+            title={isSocketConnected ? 'Real-time Arena Sync Active' : 'Reconnecting to Venue Server...'}
+            style={{
+              borderColor: isSocketConnected ? 'rgba(52, 211, 153, 0.5)' : 'rgba(251, 191, 36, 0.5)',
+              color: isSocketConnected ? '#6ee7b7' : '#fde047'
+            }}
+          >
+            <span className={`pulse-dot ${isSocketConnected ? 'green' : 'amber'}`} />
+            <span>{isSocketConnected ? 'LIVE' : 'SYNCING'}</span>
+          </div>
           {isCashRound && (session.totalBets || 0) > 0 && (
             <div className="tv-pool-pill">
               <Flame size={16} className="text-gold" />
@@ -375,12 +441,10 @@ export function TvView() {
             min={session.numberRange.min}
             max={session.numberRange.max}
             claimedNumbers={session.claimedNumbers || []}
-            winningNumber={currentRound?.winningNumber}
+            winningNumber={currentRound?.winningNumber ?? spinningResult?.winningNumber ?? null}
             isSpinning={isSpinning || status === 'SPINNING'}
-            spinDurationMs={5000}
-            onSpinComplete={() => {
-              setIsSpinning(false);
-            }}
+            spinDurationMs={spinningResult?.spinDurationMs || 5000}
+            onSpinComplete={handleSpinComplete}
           />
 
           {/* Wheel Status Footer */}
@@ -488,46 +552,52 @@ export function TvView() {
               </div>
 
               {/* Winner nickname */}
-              {session.entries?.find(e => e.number === currentRound.winningNumber)?.nickname && (
-                <div className="result-player-name">
-                  👑 {session.entries.find(e => e.number === currentRound.winningNumber)?.nickname}
-                </div>
-              )}
-
-              {/* Prize Won */}
-              {prize && (() => {
-                const winEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
+              {(() => {
+                const winEntry = session.entries?.find((e) => String(e.number) === String(currentRound.winningNumber));
+                const winnerNick = winEntry?.nickname || currentRound?.winnerNickname;
+                const isHostPickWinner = Boolean(winEntry?.player_token?.startsWith('host_pick_'));
                 const winBet = Number(winEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
                 const winPayout = Number(winEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
                 const winMult = Number(currentRound?.appliedMultiplier || 1.5);
                 const tierLabel = currentRound?.prizeTierLabel;
                 return (
-                  <div className="result-prize-box">
-                    <span className="result-won-label">
-                      {isWeightedCash
-                        ? `🎯 ${tierLabel || `R${winPayout} CASH PRIZE`} HIT!`
-                        : isCashRound
-                          ? `🔥 ${winMult}X CASH MULTIPLIER HIT!`
-                          : '🏆 GRAND PRIZE WON:'}
-                    </span>
-                    <span className="result-prize-title" style={{ color: prize.color || '#fef08a' }}>
-                      {isCashRound && winPayout > 0 ? `R${winPayout} CASH!` : prize.name}
-                    </span>
-                    <span className="result-prize-val">
-                      {isCashRound && winBet > 0
-                        ? `${tierLabel || `${winMult}x`} on their R${winBet} stake!${currentRound?.redemptionCode ? ` • Code: ${currentRound.redemptionCode}` : ''}`
-                        : prize.description}
-                    </span>
-                  </div>
+                  <>
+                    {winnerNick && (
+                      <div className="result-player-name">
+                        👑 {winnerNick}
+                      </div>
+                    )}
+
+                    {/* Prize Won */}
+                    {prize && (
+                      <div className="result-prize-box">
+                        <span className="result-won-label">
+                          {isWeightedCash
+                            ? `🎯 ${tierLabel || `R${winPayout} CASH PRIZE`} HIT!`
+                            : isCashRound
+                              ? `🔥 ${winMult}X CASH MULTIPLIER HIT!`
+                              : '🏆 GRAND PRIZE WON:'}
+                        </span>
+                        <span className="result-prize-title" style={{ color: prize.color || '#fef08a' }}>
+                          {isCashRound && winPayout > 0 ? `R${winPayout} CASH!` : prize.name}
+                        </span>
+                        <span className="result-prize-val">
+                          {isCashRound && winBet > 0
+                            ? `${tierLabel || `${winMult}x`} on their R${winBet} stake!${currentRound?.redemptionCode ? ` • Code: ${currentRound.redemptionCode}` : ''}`
+                            : prize.description}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="result-footer-instructions">
+                      <ShieldCheck size={16} className="inline-icon text-cyan" />
+                      {isHostPickWinner
+                        ? 'Host-registered pick! Claim your prize directly with the Chillax Host at the front desk!'
+                        : 'Present your winning phone screen or verify with the Chillax front desk to redeem!'}
+                    </div>
+                  </>
                 );
               })()}
-
-              <div className="result-footer-instructions">
-                <ShieldCheck size={16} className="inline-icon text-cyan" />
-                {session.entries?.find(e => e.number === currentRound.winningNumber)?.player_token?.startsWith('host_pick_')
-                  ? 'Host-registered pick! Claim your prize directly with the Chillax Host at the front desk!'
-                  : 'Present your winning phone screen or verify with the Chillax front desk to redeem!'}
-              </div>
             </div>
           ) : (
             <div className="tv-result-card tv-no-winner-card animate-pop-in">

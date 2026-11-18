@@ -73,6 +73,8 @@ export function HostView() {
   const [historyTab, setHistoryTab] = useState('entries'); // 'entries' | 'rounds'
   const [isSyncingSales, setIsSyncingSales] = useState(false);
   const [salesSyncMsg, setSalesSyncMsg] = useState('');
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const syncedSessionDefaultsRef = useRef(null);
   const walkInInputRef = useRef(null);
 
   const toggleProfitEngine = () => {
@@ -335,15 +337,26 @@ export function HostView() {
     } catch {}
   };
 
-  // Socket listener for real-time state sync
+  // Socket listener for real-time state sync with automatic reconnect room re-join
   useEffect(() => {
     if (!session?.sessionId) return;
     const socket = getSocket();
 
-    socket.emit('join:session', {
-      sessionId: session.sessionId,
-      role: 'host'
-    });
+    const joinRoom = () => {
+      setIsSocketConnected(true);
+      socket.emit('join:session', {
+        sessionId: session.sessionId,
+        role: 'host'
+      });
+    };
+
+    const handleDisconnect = () => {
+      setIsSocketConnected(false);
+    };
+
+    if (socket.connected) {
+      joinRoom();
+    }
 
     const handleState = (newState) => {
       setSession(newState);
@@ -356,13 +369,37 @@ export function HostView() {
       setMongoStatus(status);
     };
 
+    socket.on('connect', joinRoom);
+    socket.on('disconnect', handleDisconnect);
     socket.on('session:state', handleState);
     socket.on('mongodb:status', handleMongoStatus);
     return () => {
+      socket.off('connect', joinRoom);
+      socket.off('disconnect', handleDisconnect);
       socket.off('session:state', handleState);
       socket.off('mongodb:status', handleMongoStatus);
     };
   }, [session?.sessionId]);
+
+  // Keep Next-Round presets aligned when a session initially loads
+  useEffect(() => {
+    if (!session?.sessionId) return;
+    if (syncedSessionDefaultsRef.current !== session.sessionId) {
+      syncedSessionDefaultsRef.current = session.sessionId;
+      if (session.numberRange?.max) {
+        setNextRoundNumberMax(session.numberRange.max);
+        setNumberMax(session.numberRange.max);
+      }
+      if (typeof session.hasDoubleZero === 'boolean') {
+        setNextRoundHasDoubleZero(session.hasDoubleZero);
+        setHasDoubleZero(session.hasDoubleZero);
+      }
+      const roundPrizeId = session.currentRound?.prize?.id;
+      if (roundPrizeId && roundPrizeId !== 'prize_weighted_cash') {
+        setSelectedPrizeId(roundPrizeId);
+      }
+    }
+  }, [session?.sessionId, session?.numberRange?.max, session?.hasDoubleZero, session?.currentRound?.prize?.id]);
 
   // Auto-switch legacy 'prize_weighted_cash' (R10 Cash Spin) to 'prize_cash_3x' (1.5x–3x Mode) when round is open
   useEffect(() => {
@@ -1038,6 +1075,17 @@ export function HostView() {
           <span className="host-code-badge" title="Linked Shop Code from Chillax Gaming App">
             SHOP CODE: {activeShopCode}
           </span>
+          <span
+            className="host-user-pill"
+            title={isSocketConnected ? 'Real-time Server Connected' : 'Reconnecting...'}
+            style={{
+              borderColor: isSocketConnected ? 'rgba(52, 211, 153, 0.45)' : 'rgba(251, 191, 36, 0.5)',
+              color: isSocketConnected ? '#6ee7b7' : '#fde047'
+            }}
+          >
+            <span className={`pulse-dot ${isSocketConnected ? 'green' : 'amber'}`} style={{ marginRight: '4px' }} />
+            {isSocketConnected ? 'Live' : 'Syncing'}
+          </span>
         </div>
         <div className="host-header-actions">
           <a
@@ -1306,10 +1354,10 @@ export function HostView() {
 
         {isResult && (
           <div className="host-result-actions-card">
-            {currentRound?.hasWinner || session.entries?.some(e => e.number === currentRound?.winningNumber) ? (
+            {currentRound?.hasWinner || session.entries?.some(e => String(e.number) === String(currentRound?.winningNumber)) ? (
               <>
                 {(() => {
-                  const winningEntry = session.entries?.find(e => e.number === currentRound.winningNumber);
+                  const winningEntry = session.entries?.find(e => String(e.number) === String(currentRound.winningNumber));
                   const isHostEntry = winningEntry?.player_token?.startsWith('host_pick_');
                   const winBet = Number(winningEntry?.bet_amount || currentRound?.winnerBetAmount || 0);
                   const winPayout = Number(winningEntry?.payout_amount || currentRound?.winnerPayoutAmount || 0);
@@ -1548,10 +1596,10 @@ export function HostView() {
                     })}
                   </div>
 
-                  {!dailyGuard.canMakeR10Winner && (
+                  {!dailyGuard.canMakeCashWinner && (
                     <div className="guard-build-notice">
                       <span>
-                        🔒 <strong>Building {dailyGuard.targetMarginPct}% Profit Buffer:</strong> Collect <strong>+{fmtR(dailyGuard.amountNeededForNextWinner)}</strong> more in stakes to unlock the next R10+ cash winner.
+                        🔒 <strong>Building {dailyGuard.targetMarginPct}% Profit Buffer:</strong> Collect <strong>+{fmtR(dailyGuard.amountNeededForNextWinner)}</strong> more in stakes to unlock the next cash winner.
                       </span>
                       {status === 'REGISTRATION_OPEN' && (session.totalBets || 0) === 0 && isCashRound && (
                         <button
@@ -1572,7 +1620,7 @@ export function HostView() {
 
               <div className="reserve-controls-bar">
                 <span className="text-xs text-muted">
-                  All-Time Money In: <strong>{fmtR(stats.historicalCollected + (session.totalBets || 0))}</strong> • Waiting to Collect: <strong className="text-gold">{fmtR(stats.outstandingCashLiabilities || 0)}</strong> • Monthly Reserve Left: <strong className="text-cyan">{fmtR(stats.availableCashReserve)}</strong> / {fmtR(stats.monthlyCashReserve)}
+                  All-Time Money In: <strong>{fmtR(stats.allTimeCollected ?? (stats.historicalCollected || 0))}</strong> • Waiting to Collect: <strong className="text-gold">{fmtR(stats.outstandingCashLiabilities || 0)}</strong> • Monthly Reserve Left: <strong className="text-cyan">{fmtR(stats.availableCashReserve)}</strong> / {fmtR(stats.monthlyCashReserve)}
                 </span>
                 <div className="reserve-controls-actions">
                   <button
@@ -1916,7 +1964,11 @@ export function HostView() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                if (selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum)) {
+                if (
+                  selectedPickNum &&
+                  !session.entries?.some(en => String(en.number) === String(selectedPickNum)) &&
+                  !session.pendingEntries?.some(en => String(en.number) === String(selectedPickNum))
+                ) {
                   handleHostClaimNumber(selectedPickNum, walkInName);
                 }
               }}
@@ -1965,13 +2017,15 @@ export function HostView() {
                   value={walkInName}
                   onChange={(e) => setWalkInName(e.target.value)}
                   placeholder={
-                    selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum)
+                    selectedPickNum &&
+                    !session.entries?.some(en => String(en.number) === String(selectedPickNum)) &&
+                    !session.pendingEntries?.some(en => String(en.number) === String(selectedPickNum))
                       ? `Name for #${selectedPickNum} (default: Player #${selectedPickNum})`
                       : 'Walk-in player name (optional, e.g. Thabo)'
                   }
                   className="host-walkin-input"
                 />
-                {selectedPickNum && !session.entries?.some(en => en.number === selectedPickNum) && !session.pendingEntries?.some(en => en.number === selectedPickNum) && (
+                {selectedPickNum && !session.entries?.some(en => String(en.number) === String(selectedPickNum)) && !session.pendingEntries?.some(en => String(en.number) === String(selectedPickNum)) && (
                   <button
                     type="submit"
                     disabled={isAssigningPick}
@@ -1984,8 +2038,8 @@ export function HostView() {
             </form>
 
             {/* Selected Pending Join Number Management Bar */}
-            {selectedPickNum && session.pendingEntries?.some(en => en.number === selectedPickNum) && (() => {
-              const selPending = session.pendingEntries.find(en => en.number === selectedPickNum);
+            {selectedPickNum && session.pendingEntries?.some(en => String(en.number) === String(selectedPickNum)) && (() => {
+              const selPending = session.pendingEntries.find(en => String(en.number) === String(selectedPickNum));
               return (
                 <div className="host-selected-entry-bar pending-entry-bar">
                   <div className="selected-entry-info">
@@ -2029,8 +2083,8 @@ export function HostView() {
             })()}
 
             {/* Selected Claimed Number Management Bar */}
-            {selectedPickNum && session.entries?.some(en => en.number === selectedPickNum) && (() => {
-              const selEntry = session.entries.find(en => en.number === selectedPickNum);
+            {selectedPickNum && session.entries?.some(en => String(en.number) === String(selectedPickNum)) && (() => {
+              const selEntry = session.entries.find(en => String(en.number) === String(selectedPickNum));
               const isHostEntry = selEntry?.player_token?.startsWith('host_pick_');
               return (
                 <div className="host-selected-entry-bar">

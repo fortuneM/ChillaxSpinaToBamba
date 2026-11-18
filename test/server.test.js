@@ -61,17 +61,23 @@ async function runTests() {
   assert.strictEqual(sessionAfterPair.tvConnected, true, 'Session should reflect TV connected');
   console.log('  ✅ TV pairing passed');
 
-  // 4. Atomic Number Claims & Concurrency Check
-  console.log('Test 4: Atomic Number Claims & Conflict Handling');
-  // Player 1 claims #7
+  // 4. Atomic Number Claims, Host Approval Gate & Conflict Handling
+  console.log('Test 4: Atomic Number Claims, Host Approval Gate & Conflict Handling');
+  // Player 1 requests #7 -> PENDING until Host accepts
   const claim1 = engine.claimNumber(session.sessionId, {
     number: 7,
     playerToken: 'token_player_1',
     nickname: 'Thabo'
   });
-  assert.strictEqual(claim1.success, true, 'Player 1 should successfully claim #7');
+  assert.strictEqual(claim1.success, true, 'Player 1 should successfully request #7');
+  assert.strictEqual(claim1.status, 'PENDING', 'Mobile /join claim must start as PENDING Host approval');
 
-  // Player 2 tries to claim #7 as well (conflict)
+  // Unapproved request must NOT inflate active playerCount
+  const snapBeforeApprove = engine.getSessionSnapshot(session.sessionId);
+  assert.strictEqual(snapBeforeApprove.playerCount, 0, 'Unapproved PENDING request must not count as active player');
+  assert.strictEqual(snapBeforeApprove.pendingCount, 1, 'Pending count should be 1');
+
+  // Player 2 tries to claim #7 while reserved by Player 1 (conflict)
   const claim2 = engine.claimNumber(session.sessionId, {
     number: 7,
     playerToken: 'token_player_2',
@@ -80,32 +86,56 @@ async function runTests() {
   assert.strictEqual(claim2.success, false, 'Player 2 should be blocked from claiming #7');
   assert.strictEqual(claim2.status, 409, 'Status must be 409 conflict');
 
-  // Player 2 claims #12 instead
+  // Player 2 requests #12 instead
   const claim3 = engine.claimNumber(session.sessionId, {
     number: 12,
     playerToken: 'token_player_2',
     nickname: 'Sipho'
   });
-  assert.strictEqual(claim3.success, true, 'Player 2 claims #12');
+  assert.strictEqual(claim3.success, true, 'Player 2 requests #12');
 
-  // Player 1 changes their number to #3
+  // Player 1 changes their pending number to #3
   const claimChange = engine.claimNumber(session.sessionId, {
     number: 3,
     playerToken: 'token_player_1',
     nickname: 'Thabo'
   });
-  assert.strictEqual(claimChange.success, true, 'Player 1 changes number to #3');
+  assert.strictEqual(claimChange.success, true, 'Player 1 changes pending number to #3');
 
-  // Verify #7 is now free and can be claimed by Player 3
+  // Verify #7 is now free and can be requested by Player 3
   const claim4 = engine.claimNumber(session.sessionId, {
     number: 7,
     playerToken: 'token_player_3',
     nickname: 'Zandi'
   });
-  assert.strictEqual(claim4.success, true, 'Now freed #7 can be claimed by Player 3');
+  assert.strictEqual(claim4.success, true, 'Now freed #7 can be requested by Player 3');
+
+  // Unauthorized unpaid Player 4 requests #19, then Host rejects it
+  const unpaidClaim = engine.claimNumber(session.sessionId, {
+    number: 19,
+    playerToken: 'token_unpaid_p4',
+    nickname: 'FreeLoader'
+  });
+  assert.strictEqual(unpaidClaim.success, true);
+  const rejectRes = engine.hostRejectEntry(session.sessionId, unpaidClaim.entryId, { reason: 'Unpaid' });
+  assert.strictEqual(rejectRes.success, true, 'Host should reject unpaid pending request');
+
+  // Approve Players 1, 2, 3 via Host Approval Gate
+  const approveAllRes = engine.hostApproveAllEntries(session.sessionId);
+  assert.strictEqual(approveAllRes.success, true);
+  assert.strictEqual(approveAllRes.approvedCount, 3, 'Host should approve all 3 valid pending players');
+
+  // Approved player cannot change number directly from phone without Host
+  const lockedChange = engine.claimNumber(session.sessionId, {
+    number: 5,
+    playerToken: 'token_player_1',
+    nickname: 'Thabo'
+  });
+  assert.strictEqual(lockedChange.success, false, 'Host-approved player cannot alter entry from phone');
+  assert.strictEqual(lockedChange.status, 409);
 
   const snapshotWithClaims = engine.getSessionSnapshot(session.sessionId);
-  assert.strictEqual(snapshotWithClaims.playerCount, 3, 'Should have exactly 3 active players');
+  assert.strictEqual(snapshotWithClaims.playerCount, 3, 'Should have exactly 3 active players after Host approval');
 
   // 4b. Host Manual Picks for Players Without Phones
   console.log('Test 4b: Host Manual Picks (Walk-in / No-Phone Players)');
@@ -232,16 +262,20 @@ async function runTests() {
   assert.strictEqual(lowBetClaim.success, false, 'Bet below R5 should be rejected');
   assert.strictEqual(lowBetClaim.status, 400);
 
-  // Accept valid R20 bet -> baseline 1.5x (R30) before spin
+  // Accept valid R20 bet -> Host approves -> baseline 1.5x (R30) before spin
   const validCashClaim = engine.claimNumber(session.sessionId, {
     number: 4,
     playerToken: 'token_cash_1',
     nickname: 'Bongani',
     betAmount: 20
   });
-  assert.strictEqual(validCashClaim.success, true, 'Valid R20 bet should succeed');
-  assert.strictEqual(validCashClaim.betAmount, 20);
-  assert.strictEqual(validCashClaim.payoutAmount, 30, 'Initial baseline payout is 1.5x (R30)');
+  assert.strictEqual(validCashClaim.success, true, 'Valid R20 request should succeed');
+  assert.strictEqual(validCashClaim.status, 'PENDING');
+  assert.strictEqual(engine.getSessionSnapshot(session.sessionId).totalBets, 0, 'Pending request must NOT add to totalBets before Host approval');
+  const approveCash1 = engine.hostApproveEntry(session.sessionId, validCashClaim.entryId);
+  assert.strictEqual(approveCash1.success, true, 'Host accepts Bongani R20 bet');
+  assert.strictEqual(approveCash1.betAmount, 20);
+  assert.strictEqual(approveCash1.payoutAmount, 30, 'Initial baseline payout is 1.5x (R30)');
 
   // Host walk-in pick with R10 bet -> baseline 1.5x (R15)
   const hostCashPick = engine.hostClaimNumber(session.sessionId, {
@@ -272,12 +306,13 @@ async function runTests() {
   const trueOddsCashRound = engine.createNextRound(session.sessionId, { prizeId: 'prize_cash_3x' });
   assert.strictEqual(trueOddsCashRound.success, true);
   engine.setWinnerMode(session.sessionId, 'TRUE_ODDS');
-  engine.claimNumber(session.sessionId, {
+  const soloReq = engine.claimNumber(session.sessionId, {
     number: 11,
     playerToken: 'token_single_bettor',
     nickname: 'SoloPlayer',
     betAmount: 50
   });
+  engine.hostApproveEntry(session.sessionId, soloReq.entryId);
   engine.closeRegistration(session.sessionId);
 
   let winCount = 0;
@@ -376,14 +411,16 @@ async function runTests() {
   assert.strictEqual(snapZeros.numberRange.max, 10);
   assert.strictEqual(snapZeros.wheelNumbers.length, 12, '10 numbers + 2 zeros = 12 wheel pockets');
 
-  // Claim '0' as player
+  // Claim '0' as player -> Host approves
   const claim0 = engine.claimNumber(session.sessionId, {
     number: '0',
     playerToken: 'tok_zero_player',
     nickname: 'ZeroHero'
   });
-  assert.strictEqual(claim0.success, true, 'Should successfully claim single zero "0"');
+  assert.strictEqual(claim0.success, true, 'Should successfully request single zero "0"');
   assert.strictEqual(claim0.number, '0');
+  const approve0 = engine.hostApproveEntry(session.sessionId, claim0.entryId);
+  assert.strictEqual(approve0.success, true, 'Host approves single zero "0"');
 
   // Claim '00' as host walk-in
   const claim00 = engine.hostClaimNumber(session.sessionId, {
@@ -393,7 +430,12 @@ async function runTests() {
   assert.strictEqual(claim00.success, true, 'Should successfully claim double zero "00"');
   assert.strictEqual(claim00.number, '00');
 
-  // Changing wheel config updates live pockets
+  // Prevent disabling 0 & 00 while active players hold '0' or '00'
+  const blockedShrink = engine.setWheelConfig(session.sessionId, { numberMax: 10, hasDoubleZero: false });
+  assert.strictEqual(blockedShrink.success, false, 'Must block removing zeros when 0/00 are actively claimed');
+  assert.strictEqual(blockedShrink.status, 409);
+
+  // Changing wheel config to expand updates live pockets safely
   const updateCfg = engine.setWheelConfig(session.sessionId, { numberMax: 30, hasDoubleZero: true });
   assert.strictEqual(updateCfg.success, true);
   assert.strictEqual(updateCfg.snapshot.wheelNumbers.length, 32, '30 numbers + 2 zeros = 32 wheel pockets');
@@ -441,7 +483,7 @@ async function runTests() {
   assert.strictEqual(underageClaim.success, false, 'Underage entry must be rejected');
   assert.strictEqual(underageClaim.status, 403);
 
-  // Claim a paid R10 entry and verify unique transaction ID (txId)
+  // Claim a paid R10 entry, Host accepts payment, and verify unique transaction ID (txId)
   const paidClaim = engine.claimNumber(finSession.sessionId, {
     number: '5',
     playerToken: 'tok_weighted_p1',
@@ -451,6 +493,8 @@ async function runTests() {
   });
   assert.strictEqual(paidClaim.success, true);
   assert(paidClaim.txId && paidClaim.txId.startsWith('TX-'), 'Paid entry must generate a unique transaction ID');
+  const paidApprove = engine.hostApproveEntry(finSession.sessionId, paidClaim.entryId);
+  assert.strictEqual(paidApprove.success, true, 'Host approves paid entry');
 
   // Verify Reserve Rule: Cannot change prize/odds after customers have paid in a round
   const lockCheck = engine.setRoundPrize(finSession.sessionId, 'prize_1');
@@ -532,13 +576,18 @@ async function runTests() {
   assert.strictEqual(guard.prizeBudgetLeft, 0);
   assert.strictEqual(guard.canMakeR10Winner, false, 'Cannot make R10 winner when R0 has been collected');
 
-  // Step 17b: 1 player stakes R10 -> Collected = R10, 30% Shop Profit Floor = R3, 70% Winner Pool = R7 (< R10)
-  engine.claimNumber(guardSession.sessionId, {
+  // Step 17b: 1 player stakes R10 -> Unapproved PENDING does NOT count yet; once Host approves:
+  // Collected = R10, 30% Shop Profit Floor = R3, 70% Winner Pool = R7 (< R10)
+  const pg1 = engine.claimNumber(guardSession.sessionId, {
     number: '1',
     playerToken: 'tok_pg_1',
     nickname: 'PlayerOne',
     betAmount: 10
   });
+  guard = engine.getDailyProfitGuard(guardSession.sessionId);
+  assert.strictEqual(guard.collectedToday, 0, 'Unapproved PENDING request must not count toward collectedToday');
+  engine.hostApproveEntry(guardSession.sessionId, pg1.entryId);
+
   guard = engine.getDailyProfitGuard(guardSession.sessionId);
   assert.strictEqual(guard.collectedToday, 10);
   assert.strictEqual(guard.requiredProfitFloor, 3, '30% of R10 = R3 protected profit floor');
@@ -556,7 +605,7 @@ async function runTests() {
     assert.strictEqual(out.payoutAmount, 0, 'Must not pay R10 when daily winner budget is only R7');
   }
 
-  // Step 17c: 2nd and 3rd players stake R10 -> Collected = R30, 30% Profit Floor = R9, 70% Winner Pool = R21
+  // Step 17c: 2nd and 3rd players stake R10 + Host accepts -> Collected = R30, 30% Profit Floor = R9, 70% Winner Pool = R21
   engine.claimNumber(guardSession.sessionId, {
     number: '2',
     playerToken: 'tok_pg_2',
@@ -569,6 +618,19 @@ async function runTests() {
     nickname: 'PlayerThree',
     betAmount: 10
   });
+  // Unaccepted player on #4 will be auto-cleared when registration closes
+  engine.claimNumber(guardSession.sessionId, {
+    number: '4',
+    playerToken: 'tok_pg_unpaid',
+    nickname: 'UnpaidGhost',
+    betAmount: 10
+  });
+  const pendingSnap = engine.getSessionSnapshot(guardSession.sessionId);
+  for (const p of pendingSnap.pendingEntries) {
+    if (p.number === '2' || p.number === '3') {
+      engine.hostApproveEntry(guardSession.sessionId, p.id);
+    }
+  }
   guard = engine.getDailyProfitGuard(guardSession.sessionId);
   assert.strictEqual(guard.collectedToday, 30);
   assert.strictEqual(guard.requiredProfitFloor, 9, '30% of R30 = R9 protected profit floor');
@@ -586,9 +648,12 @@ async function runTests() {
   assert.strictEqual(whaleOut.winningEntry, null, 'Must never allow an unbacked R500 bet (R750 payout) to win and put shop in loss');
   assert.strictEqual(whaleOut.appliedMultiplier, 0);
 
-  // Step 17e: Spin the R30 round in GUARANTEED mode -> Winner wins R10 or R20, shop keeps >= 33% profit
+  // Step 17e: Close registration (clears unaccepted #4) & spin R30 round in GUARANTEED mode -> Winner wins R10 or R20, shop keeps >= 33% profit
   engine.setWinnerMode(guardSession.sessionId, 'GUARANTEED');
   engine.closeRegistration(guardSession.sessionId);
+  const snapCleared = engine.getSessionSnapshot(guardSession.sessionId);
+  assert.strictEqual(snapCleared.pendingCount, 0, 'Closing registration must auto-clear unaccepted PENDING entries');
+  assert.strictEqual(snapCleared.playerCount, 3, 'Only 3 Host-approved players remain active');
   const pgSpin = engine.spin(guardSession.sessionId, { idempotencyKey: 'pg_spin_1' });
   assert.strictEqual(pgSpin.success, true);
   assert.strictEqual(pgSpin.hasWinner, true);
@@ -598,7 +663,20 @@ async function runTests() {
   assert(postGuard.marginPct >= 30, `Shop daily profit margin must remain >= 30% after paying winner (got ${postGuard.marginPct}%)`);
   console.log(`  ✅ Daily Collections & 30%+ Profit-Guard Engine verified (Collected: R${postGuard.collectedToday}, Prize: R${postGuard.prizesToday}, Profit: R${postGuard.profitToday} [${postGuard.marginPct}%])`);
 
-  console.log('\n🎉 ALL 17 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 18. Spin Crash Recovery Test (stuck SPINNING round auto-finalizes to RESULT)
+  console.log('Test 18: Stuck SPINNING Round Crash Recovery');
+  const stuckRoundId = guardSession.snapshot.currentRound.id;
+  db.prepare(`UPDATE rounds SET status = 'SPINNING', started_at = ? WHERE id = ?`).run(
+    new Date(Date.now() - 20000).toISOString(),
+    stuckRoundId
+  );
+  db.prepare(`UPDATE sessions SET status = 'SPINNING' WHERE id = ?`).run(guardSession.sessionId);
+  engine.recoverStuckSpinningRounds();
+  const recoveredSnap = engine.getSessionSnapshot(guardSession.sessionId);
+  assert.strictEqual(recoveredSnap.status, 'RESULT', 'Recovered stuck SPINNING round must finalize cleanly to RESULT');
+  console.log('  ✅ Stuck SPINNING round recovery passed');
+
+  console.log('\n🎉 ALL 18 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

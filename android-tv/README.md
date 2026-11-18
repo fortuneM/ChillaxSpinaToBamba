@@ -11,8 +11,8 @@ This directory contains the native **Android TV Kiosk Wrapper** for **Chillax Sp
 - **Screen Wake Lock**: Prevents the TV from going into standby, sleep, or screensaver mode during gaming center operational hours.
 - **Hardware Accelerated**: Runs smoothly at 60 FPS with full Web Audio API synthesizer support.
 - **Remote Control Friendly**:
-  - Automatically loads the configured venue server URL (`http://<server-ip>:3000/tv`).
-  - Press the remote control **Menu** button or **Back** button at any time to open the on-screen IP setup dialog to change or reload the venue server address.
+  - Automatically loads the configured venue server URL (`http://<server-ip>:3000/tv`) and auto-retries every 5 seconds if the venue PC server is still booting.
+  - Press **Menu**, **0**, **Back**, or **Long-Press OK (DPAD Center)** at any time to open the on-screen IP setup dialog to change or reload the venue server address.
 
 ---
 

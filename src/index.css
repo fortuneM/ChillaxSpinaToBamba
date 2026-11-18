@@ -4277,4 +4277,22 @@ body {
   color: #fef08a;
 }
 
+.player-switch-shop-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #cbd5e1;
+  border-radius: 9px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.player-switch-shop-btn:hover {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
 
