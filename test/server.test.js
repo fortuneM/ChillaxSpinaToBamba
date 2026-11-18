@@ -665,6 +665,33 @@ async function runTests() {
   assert(postGuard.marginPct >= 30, `Shop daily profit margin must remain >= 30% after paying winner (got ${postGuard.marginPct}%)`);
   console.log(`  ✅ Daily Collections & 30%+ Profit-Guard Engine verified (Collected: R${postGuard.collectedToday}, Prize: R${postGuard.prizesToday}, Profit: R${postGuard.profitToday} [${postGuard.marginPct}%])`);
 
+  // Step 17f: Verify Fair-Play Pity & Profit Balance in TRUE_ODDS Cash Multiplier mode
+  // When shop has healthy winner budget and players had a dry spell (or 0 winners today), TRUE_ODDS fairly crowns a player winner while keeping >= 30% profit
+  const fairShopCode = `CHX-${Math.floor(10000 + Math.random() * 89999)}`;
+  const fairSession = await engine.createSession({
+    numberMin: 1,
+    numberMax: 20,
+    hostPin: '1234',
+    defaultPrizeId: 'prize_cash_3x',
+    shopCode: fairShopCode,
+    shopId: `shop_${fairShopCode}`,
+    shopName: 'Chillax Fair Play Shop'
+  });
+  engine.setWinnerMode(fairSession.sessionId, 'TRUE_ODDS');
+  engine.hostClaimNumber(fairSession.sessionId, { number: '5', nickname: 'FairPlayer1', betAmount: 20 });
+  engine.hostClaimNumber(fairSession.sessionId, { number: '10', nickname: 'FairPlayer2', betAmount: 20 });
+  engine.hostClaimNumber(fairSession.sessionId, { number: '15', nickname: 'FairPlayer3', betAmount: 20 });
+  // Total collected = R60 -> 30% shop profit floor = R18 -> 70% winner budget = R42 (easily covers 1.5x = R30 or 2x = R40)
+  const fairGuardBefore = engine.getDailyProfitGuard(fairSession.sessionId);
+  assert.strictEqual(fairGuardBefore.isFairPityDue, true, 'First eligible cash round with 0 winners today must activate Fair-Play Pity');
+  engine.closeRegistration(fairSession.sessionId);
+  const fairSpin = engine.spin(fairSession.sessionId, { idempotencyKey: 'fair_spin_1' });
+  assert.strictEqual(fairSpin.success, true);
+  assert.strictEqual(fairSpin.hasWinner, true, 'Fair-Play Regulator must crown a player winner when budget is ready and 0 winners today');
+  const fairGuardAfter = engine.getDailyProfitGuard(fairSession.sessionId);
+  assert(fairGuardAfter.marginPct >= 30, `Shop profit must remain >= 30% after Fair-Play win (got ${fairGuardAfter.marginPct}%)`);
+  console.log(`  ✅ Player Fair-Play & Profit-Balance Regulator verified (Winner paid R${fairSpin.winnerPayoutAmount}, Shop Profit: R${fairGuardAfter.profitToday} [${fairGuardAfter.marginPct}%])`);
+
   // 18. Spin Crash Recovery Test (stuck SPINNING round auto-finalizes to RESULT)
   console.log('Test 18: Stuck SPINNING Round Crash Recovery');
   const stuckRoundId = guardSession.snapshot.currentRound.id;

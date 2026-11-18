@@ -1597,6 +1597,21 @@ export function HostView() {
                     })}
                   </div>
 
+                  {dailyGuard.canMakeCashWinner && dailyGuard.fairPlaySummary && (
+                    <div
+                      className="guard-build-notice"
+                      style={{
+                        borderColor: dailyGuard.isFairPityDue ? 'rgba(52, 211, 153, 0.7)' : 'rgba(0, 242, 254, 0.45)',
+                        background: dailyGuard.isFairPityDue ? 'rgba(6, 78, 59, 0.35)' : 'rgba(15, 23, 42, 0.7)'
+                      }}
+                    >
+                      <span className="text-xs" style={{ color: dailyGuard.isFairPityDue ? '#6ee7b7' : '#cbd5e1' }}>
+                        ⚖️ <strong>{dailyGuard.isFairPityDue ? 'Player Fair-Win Guarantee Ready:' : 'Player Fairness & Profit Balance:'}</strong>{' '}
+                        {dailyGuard.fairPlaySummary}
+                      </span>
+                    </div>
+                  )}
+
                   {!dailyGuard.canMakeCashWinner && (
                     <div className="guard-build-notice">
                       <span>

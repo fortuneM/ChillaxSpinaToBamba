@@ -567,9 +567,12 @@ export class GameEngine {
     const dailyRequiredProfitFloor = Math.round((collectedToday * targetProfitRatio) * 100) / 100;
     const dailyMaxPrizePool = Math.max(0, Math.round((collectedToday - dailyRequiredProfitFloor) * 100) / 100);
     const prizeBudgetLeft = Math.max(0, Math.round((dailyMaxPrizePool - prizesToday) * 100) / 100);
+    const effectiveRoundPrizeCap = isCurrentWeightedCash
+      ? maxSingleCashPrize
+      : Math.max(maxSingleCashPrize, 300);
     const maxPrizeThisRound = Math.max(
       0,
-      Math.floor(Math.min(prizeBudgetLeft, maxSingleCashPrize, monthlyReserveRemaining) * 100) / 100
+      Math.floor(Math.min(prizeBudgetLeft, effectiveRoundPrizeCap, monthlyReserveRemaining) * 100) / 100
     );
     const unlockedWeightedTiers = [10, 20, 50, 100].filter((t) => t <= maxPrizeThisRound);
     const unlockedMultipliers = [1.5, 2, 3].filter((m) => (5 * m) <= maxPrizeThisRound);
@@ -581,6 +584,21 @@ export class GameEngine {
     const dailyGuardStatus = maxPrizeThisRound < minCashWinTarget
       ? (prizesToday > 0 ? 'PAUSED' : 'BUILDING_PROFIT')
       : (dailyMarginPct >= 40 ? 'HEALTHY' : 'WATCH');
+
+    const canMakeCashWinnerNow = maxPrizeThisRound >= 7.5;
+    const isFairPityDue = canMakeCashWinnerNow && (
+      consecutiveNoWinners >= 2 ||
+      (dailyWinnersCount === 0 && collectedToday >= 25) ||
+      (dailyMarginPct >= 75 && prizeBudgetLeft >= 30 && consecutiveNoWinners >= 1)
+    );
+    const nextSpinFairBoost = !canMakeCashWinnerNow
+      ? 'BUILDING_BUFFER'
+      : (isFairPityDue ? 'GUARANTEED_FAIR_WIN' : 'BALANCED_FAIR_ODDS');
+    const fairPlaySummary = !canMakeCashWinnerNow
+      ? `Profit Guard Active: Collect +R${amountNeededForNextWinner} more to lock ${targetProfitMarginPct}% shop profit and unlock the next cash winner.`
+      : isFairPityDue
+        ? `Fair-Play Pity Active: Next eligible spin is guaranteed to crown a player winner (${consecutiveNoWinners > 0 ? `${consecutiveNoWinners}-round dry spell` : 'First winner of the day'} • R${prizeBudgetLeft} winner budget ready).`
+        : `Fair-Play Balanced: Boosted player win odds (45%–90%) funded from R${prizeBudgetLeft} winner budget while locking ${targetProfitMarginPct}%+ shop profit.`;
 
     const dailyProfitGuard = {
       tradingDate: todaySast,
@@ -599,12 +617,16 @@ export class GameEngine {
       maxPrizeThisRound,
       unlockedWeightedTiers,
       unlockedMultipliers,
-      canMakeCashWinner: maxPrizeThisRound >= 7.5,
+      canMakeCashWinner: canMakeCashWinnerNow,
       canMakeR10Winner: maxPrizeThisRound >= 10,
       amountNeededForNextWinner,
       roundsToday: dailyRoundsCount,
       entriesToday: dailyEntriesCount + currentRoundEntriesCount,
       winnersToday: dailyWinnersCount,
+      consecutiveNoWinners,
+      isFairPityDue,
+      nextSpinFairBoost,
+      fairPlaySummary,
       status: dailyGuardStatus,
       ruleSummary: `Shop locks ${targetProfitMarginPct}% profit from today's collections first (${100 - targetProfitMarginPct}% max winner pool).`
     };
@@ -876,11 +898,12 @@ export class GameEngine {
     const dailyMaxSafePayout = Math.max(0, (dailyInflow - stats.dailyCommittedCash) - dailyProfitFloor);
 
     // Effective maximum payout that keeps BOTH today's collections AND cumulative collections at >= 30% shop profit
+    const effectiveSingleCap = Math.max(Number(stats.maxSingleCashPrize) || 100, 300);
     const maxSafePayout = Math.min(
       cumulativeMaxSafePayout,
       dailyMaxSafePayout,
       stats.monthlyReserveRemaining,
-      stats.maxSingleCashPrize || 100
+      effectiveSingleCap
     );
 
     // Entries where paying 1.5x keeps the shop at or above its 30% minimum profit floor
@@ -890,10 +913,10 @@ export class GameEngine {
     const claimedMap = new Map(entries.map(e => [normalizeWheelNumber(e.number), e]));
     const unclaimedNums = allWheelNums.filter(n => !claimedMap.has(normalizeWheelNumber(n)));
 
-    // Helper: pick an entry weighted inversely by sqrt(bet) so smaller/safer bets win more frequently
+    // Helper: pick an entry fairly across safe entries (gentle sqrt weighting so all bet sizes get a fair shot)
     const pickWeightedEntry = (pool) => {
       if (pool.length === 1) return pool[0];
-      const weights = pool.map(e => Math.max(1, Math.round(100 / Math.sqrt(Math.max(5, Number(e.bet_amount))))));
+      const weights = pool.map(e => Math.max(10, Math.round(100 / Math.pow(Math.max(5, Number(e.bet_amount)), 0.35))));
       const totalWeight = weights.reduce((a, b) => a + b, 0);
       let roll = crypto.randomInt(0, totalWeight);
       for (let i = 0; i < pool.length; i++) {
@@ -920,24 +943,66 @@ export class GameEngine {
         winningEntry = null;
       }
     } else {
-      // TRUE_ODDS (Authentic random spin across ALL pockets in wheel range, gated by 30% daily profit guard)
-      const rawNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
-      const rawEntry = claimedMap.get(normalizeWheelNumber(rawNumber)) || null;
-
-      if (!rawEntry) {
-        // Natural roll landed on an unclaimed pocket -> NO WINNER (house keeps wagers)
-        winningNumber = normalizeWheelNumber(rawNumber);
+      // TRUE_ODDS + FAIR-PLAY REGULATOR:
+      // 1. If no entry fits within the 30%+ profit guard (safeEntries is empty), strictly protect shop profit.
+      // 2. When safeEntries exist (shop is ALREADY guaranteed >= 30% profit even after paying a winner),
+      //    balance natural wheel odds with Anti-Drought Pity & Group Play Fairness so players win regularly!
+      if (safeEntries.length === 0) {
+        winningNumber = unclaimedNums.length > 0
+          ? normalizeWheelNumber(unclaimedNums[crypto.randomInt(0, unclaimedNums.length)])
+          : normalizeWheelNumber(allWheelNums[0]);
         winningEntry = null;
       } else {
-        // Natural roll landed on a player's number! Verify 30%+ daily & cumulative profit guard
-        const isSafe = (Number(rawEntry.bet_amount) * 1.5) <= maxSafePayout;
+        const noWinStreak = Number(stats.consecutiveNoWinners) || 0;
+        const winnersToday = Number(stats.dailyProfitGuard?.winnersToday) || 0;
+        const projectedMarginBeforeWin = dailyInflow > 0
+          ? ((dailyInflow - (stats.dailyCommittedCash || 0)) / dailyInflow) * 100
+          : 100;
 
-        if (isSafe) {
-          // Payout is within the 70% daily prize budget (shop keeps >= 30% profit): player wins!
-          winningNumber = normalizeWheelNumber(rawNumber);
+        // Calculate fair player win probability (0..100%) given that 30%+ shop profit is already locked in:
+        let fairWinChancePct = Math.round((safeEntries.length / Math.max(1, allWheelNums.length)) * 100);
+
+        // Fair baseline by group size when profit buffer is ready
+        if (entries.length >= 5) {
+          fairWinChancePct = Math.max(fairWinChancePct, 85);
+        } else if (entries.length >= 3) {
+          fairWinChancePct = Math.max(fairWinChancePct, 72);
+        } else if (entries.length === 2) {
+          fairWinChancePct = Math.max(fairWinChancePct, 55);
+        } else {
+          fairWinChancePct = Math.max(fairWinChancePct, 42);
+        }
+
+        // Boost fairness when shop profit margin is sitting high (>60%) with plenty of winner budget
+        if (projectedMarginBeforeWin >= 75 && dailyMaxSafePayout >= 30) {
+          fairWinChancePct += 25;
+        } else if (projectedMarginBeforeWin >= 60 && dailyMaxSafePayout >= 20) {
+          fairWinChancePct += 15;
+        }
+
+        // Anti-drought pity boost: after 1 no-winner round add +30%; after 2+ no-winner rounds (or 0 winners today with R25+ collected) guarantee a win (100%)
+        if (noWinStreak >= 2 || (winnersToday === 0 && dailyInflow >= 25) || (entries.length >= 3 && noWinStreak >= 1)) {
+          fairWinChancePct = 100;
+        } else if (noWinStreak === 1) {
+          fairWinChancePct = Math.min(100, fairWinChancePct + 30);
+        }
+
+        fairWinChancePct = Math.min(100, Math.max(0, fairWinChancePct));
+
+        // First roll natural wheel pocket
+        const rawNumber = allWheelNums[crypto.randomInt(0, allWheelNums.length)];
+        const rawEntry = claimedMap.get(normalizeWheelNumber(rawNumber)) || null;
+        const isRawSafe = rawEntry && (Number(rawEntry.bet_amount) * 1.5) <= maxSafePayout;
+
+        if (isRawSafe) {
+          // Natural hit on an eligible player number!
           winningEntry = rawEntry;
+          winningNumber = normalizeWheelNumber(rawEntry.number);
+        } else if (crypto.randomInt(0, 100) < fairWinChancePct) {
+          // Fair-Play & Profit-Balanced Win: select a winner from safeEntries (shop still keeps >= 30% profit!)
+          winningEntry = pickWeightedEntry(safeEntries);
+          winningNumber = normalizeWheelNumber(winningEntry.number);
         } else if (unclaimedNums.length > 0) {
-          // Shop has not yet collected enough today to pay 1.5x on this bet while keeping >= 30% profit
           winningNumber = normalizeWheelNumber(unclaimedNums[crypto.randomInt(0, unclaimedNums.length)]);
           winningEntry = null;
         } else {
@@ -2339,10 +2404,17 @@ export class GameEngine {
       winningNumber = normalizeWheelNumber(winningEntry.number);
       prizeTierLabel = roundPrize?.name || null;
     } else {
-      // Default: TRUE_ODDS (Hard arcade challenge: selection across ALL numbers in wheel range!)
+      // Default: TRUE_ODDS with Fair-Play Pity (prevents long dry spells on promo prizes too)
       const allWheelNums = this.getWheelNumbers(session);
-      winningNumber = normalizeWheelNumber(allWheelNums[crypto.randomInt(0, allWheelNums.length)]);
-      winningEntry = entries.find(e => normalizeWheelNumber(e.number) === normalizeWheelNumber(winningNumber)) || null;
+      const promoStats = this.getHouseCashStats(sessionId, currentRound.id);
+      const promoPityDue = (promoStats.consecutiveNoWinners >= 2 || entries.length >= 4) && entries.length > 0;
+      if (promoPityDue && crypto.randomInt(0, 100) < 85) {
+        winningEntry = entries[crypto.randomInt(0, entries.length)];
+        winningNumber = normalizeWheelNumber(winningEntry.number);
+      } else {
+        winningNumber = normalizeWheelNumber(allWheelNums[crypto.randomInt(0, allWheelNums.length)]);
+        winningEntry = entries.find(e => normalizeWheelNumber(e.number) === normalizeWheelNumber(winningNumber)) || null;
+      }
       if (winningEntry) {
         prizeTierLabel = roundPrize?.name || null;
       }
