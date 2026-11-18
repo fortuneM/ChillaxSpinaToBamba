@@ -639,21 +639,28 @@ app.get('*', (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
-  const mongoConn = await connectMongo();
-  if (mongoConn.connected) {
-    await syncWithChillaxGamingHub(db);
-  }
-
   server.listen(PORT, () => {
     console.log(`=======================================================`);
     console.log(`🎮 CHILLAX SPIN & WIN SERVER IS RUNNING`);
-    console.log(`🗄️  MongoDB: ${mongoConn.connected ? `Connected to "${mongoConn.dbName}" (${mongoConn.host})` : 'Local SQLite Cache (Ready to link chillaxgaminghub)'}`);
+    console.log(`🗄️  MongoDB: Connecting & syncing "chillaxgaminghub"...`);
     console.log(`📡 URL: http://localhost:${PORT}`);
     console.log(`📺 TV Display: http://localhost:${PORT}/tv`);
     console.log(`📱 Host Controller: http://localhost:${PORT}/host`);
     console.log(`🎯 Player Join: http://localhost:${PORT}/join`);
     console.log(`=======================================================`);
   });
+
+  // Connect and sync permanent DB asynchronously so HTTP/Vite proxy never blocks on boot or --watch restart
+  connectMongo()
+    .then(async (mongoConn) => {
+      if (mongoConn.connected) {
+        await syncWithChillaxGamingHub(db);
+        io.emit('mongodb:status', getMongoStatus());
+      }
+    })
+    .catch((err) => {
+      console.warn('[Startup Sync Warning]', err.message);
+    });
 }
 
 startServer();

@@ -404,41 +404,43 @@ async function runTests() {
     'Double zero "00" must be positioned directly opposite single zero "0" across the wheel'
   );
 
-  // Create a new round on session to test claiming 0 and 00
+  // Create a new round on session to verify 0 and 00 are non-pickable House Zeros
   const rZerosRes = engine.createNextRound(session.sessionId, { prizeId: 'prize_1', numberMax: 10, hasDoubleZero: true });
   assert.strictEqual(rZerosRes.success, true);
   const snapZeros = engine.getSessionSnapshot(session.sessionId);
   assert.strictEqual(snapZeros.numberRange.max, 10);
   assert.strictEqual(snapZeros.wheelNumbers.length, 12, '10 numbers + 2 zeros = 12 wheel pockets');
+  assert.strictEqual(snapZeros.pickableCount, 10, 'Only 10 player numbers are pickable when 0 & 00 are House Zeros');
 
-  // Claim '0' as player -> Host approves
+  // Player attempt to pick '0' must be rejected (400)
   const claim0 = engine.claimNumber(session.sessionId, {
     number: '0',
     playerToken: 'tok_zero_player',
     nickname: 'ZeroHero'
   });
-  assert.strictEqual(claim0.success, true, 'Should successfully request single zero "0"');
-  assert.strictEqual(claim0.number, '0');
-  const approve0 = engine.hostApproveEntry(session.sessionId, claim0.entryId);
-  assert.strictEqual(approve0.success, true, 'Host approves single zero "0"');
+  assert.strictEqual(claim0.success, false, 'Player must NOT be allowed to pick single zero "0"');
+  assert.strictEqual(claim0.status, 400);
 
-  // Claim '00' as host walk-in
+  // Host attempt to pick '00' must also be rejected (400)
   const claim00 = engine.hostClaimNumber(session.sessionId, {
     number: '00',
     nickname: 'DoubleZeroFan'
   });
-  assert.strictEqual(claim00.success, true, 'Should successfully claim double zero "00"');
-  assert.strictEqual(claim00.number, '00');
-
-  // Prevent disabling 0 & 00 while active players hold '0' or '00'
-  const blockedShrink = engine.setWheelConfig(session.sessionId, { numberMax: 10, hasDoubleZero: false });
-  assert.strictEqual(blockedShrink.success, false, 'Must block removing zeros when 0/00 are actively claimed');
-  assert.strictEqual(blockedShrink.status, 409);
+  assert.strictEqual(claim00.success, false, 'Host must NOT be allowed to pick double zero "00"');
+  assert.strictEqual(claim00.status, 400);
 
   // Changing wheel config to expand updates live pockets safely
   const updateCfg = engine.setWheelConfig(session.sessionId, { numberMax: 30, hasDoubleZero: true });
   assert.strictEqual(updateCfg.success, true);
   assert.strictEqual(updateCfg.snapshot.wheelNumbers.length, 32, '30 numbers + 2 zeros = 32 wheel pockets');
+  assert.strictEqual(updateCfg.snapshot.pickableCount, 30);
+
+  // Claim #25, then verify shrinking wheel to 10 blocks with 409 because #25 is active
+  const pick25 = engine.hostClaimNumber(session.sessionId, { number: '25', nickname: 'HighPick' });
+  assert.strictEqual(pick25.success, true);
+  const blockedShrink = engine.setWheelConfig(session.sessionId, { numberMax: 10, hasDoubleZero: true });
+  assert.strictEqual(blockedShrink.success, false, 'Must block shrinking wheel while #25 is actively claimed');
+  assert.strictEqual(blockedShrink.status, 409);
 
   console.log('  ✅ Wheel numbers selection & 2 zeros (0 & 00) passed');
 

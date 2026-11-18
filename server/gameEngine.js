@@ -297,6 +297,12 @@ export function normalizeWheelNumber(val) {
   return s;
 }
 
+// House zero pockets ('0' and '00') exist strictly to lower player odds and cannot be picked
+export function isHouseZeroPocket(val) {
+  const n = normalizeWheelNumber(val);
+  return n === '0' || n === '00';
+}
+
 // Format a date/timestamp into the shop's South African trading day (YYYY-MM-DD in Africa/Johannesburg)
 export function getTradingDateString(isoOrDate = new Date()) {
   try {
@@ -1195,6 +1201,7 @@ export class GameEngine {
     }
 
     const wheelNumbers = this.getWheelNumbers(session);
+    const pickableNumbers = wheelNumbers.filter((n) => !isHouseZeroPocket(n));
     const claimedNumbers = entries.map(e => String(e.number));
     const pendingNumbers = pendingEntries.map(e => String(e.number));
     const totalBets = entries.reduce((sum, e) => sum + (Number(e.bet_amount) || 0), 0);
@@ -1226,11 +1233,14 @@ export class GameEngine {
       shopCode: sessionSettings.shopCode || matchedShop?.shopCode || session.short_code,
       status: currentRound ? currentRound.status : session.status,
       wheelNumbers,
+      pickableNumbers,
+      pickableCount: pickableNumbers.length,
       hasDoubleZero: session.has_double_zero !== 0,
       numberRange: {
         min: session.number_min,
         max: session.number_max,
-        totalSlots: wheelNumbers.length
+        totalSlots: wheelNumbers.length,
+        pickableSlots: pickableNumbers.length
       },
       winnerMode: session.winner_mode || 'TRUE_ODDS',
       playerCount: entries.length,
@@ -1554,6 +1564,13 @@ export class GameEngine {
     }
 
     const cleanNum = normalizeWheelNumber(number);
+    if (isHouseZeroPocket(cleanNum)) {
+      return {
+        success: false,
+        status: 400,
+        error: `Pocket #${cleanNum} is a House Zero and cannot be picked — choose a player number (${session.number_min || 1}–${session.number_max || 20}).`
+      };
+    }
     const validWheelNums = this.getWheelNumbers(session);
     if (!cleanNum || !validWheelNums.includes(cleanNum)) {
       return {
@@ -1756,6 +1773,10 @@ export class GameEngine {
       return { success: false, status: 404, error: 'Pending entry request not found or already processed.' };
     }
 
+    if (isHouseZeroPocket(pendingEntry.number)) {
+      return { success: false, status: 400, error: `House zero pocket #${pendingEntry.number} cannot be approved.` };
+    }
+
     const prize = currentRound.prize_id
       ? db.prepare('SELECT * FROM prizes WHERE id = ?').get(currentRound.prize_id)
       : (currentRound.prize_snapshot_json ? JSON.parse(currentRound.prize_snapshot_json) : null);
@@ -1951,6 +1972,13 @@ export class GameEngine {
     }
 
     const cleanNum = normalizeWheelNumber(number);
+    if (isHouseZeroPocket(cleanNum)) {
+      return {
+        success: false,
+        status: 400,
+        error: `Pocket #${cleanNum} is a House Zero and cannot be picked — choose a player number (${session.number_min || 1}–${session.number_max || 20}).`
+      };
+    }
     const validWheelNums = this.getWheelNumbers(session);
     if (!cleanNum || !validWheelNums.includes(cleanNum)) {
       return {

@@ -149,43 +149,64 @@ export function saveMongoUriToEnv(uri, dbName = DEFAULT_DB_NAME) {
   }
 }
 
+let activeConnectPromise = null;
+
 export async function connectMongo(customUri = null) {
-  // Reload .env in case it was updated while running
-  dotenv.config({ path: envPath, override: true });
-
-  const resolvedUri = normalizeMongoUri(customUri || process.env.MONGODB_URI || DEFAULT_MONGODB_URI);
-  const dbName = process.env.MONGODB_DB_NAME || DEFAULT_DB_NAME;
-  process.env.MONGODB_URI = resolvedUri;
-  process.env.MONGODB_DB_NAME = dbName;
-  hubCache.dbName = dbName;
-
-  hubCache.connecting = true;
-  try {
-    if (mongoose.connection.readyState === 1) {
-      await mongoose.disconnect();
-    }
-
-    await mongoose.connect(resolvedUri, {
-      dbName,
-      serverSelectionTimeoutMS: 8000,
-      connectTimeoutMS: 8000
-    });
-
-    hubCache.connected = true;
-    hubCache.connecting = false;
-    hubCache.clusterHost = DEFAULT_CLUSTER_HOST;
-    hubCache.dbName = mongoose.connection.name || dbName;
-    hubCache.lastError = null;
-
-    console.log(`✅ [MongoDB] Default permanent DB connected: "${hubCache.dbName}" (${DEFAULT_CLUSTER_HOST})`);
+  if (!customUri && mongoose.connection.readyState === 1 && hubCache.connected) {
     return { connected: true, host: hubCache.clusterHost, dbName: hubCache.dbName };
-  } catch (err) {
-    hubCache.connected = false;
-    hubCache.connecting = false;
-    hubCache.lastError = err.message;
-    console.warn('⚠️ [MongoDB] Connection failed:', err.message);
-    return { connected: false, error: err.message };
   }
+  if (!customUri && activeConnectPromise) {
+    return activeConnectPromise;
+  }
+
+  const runConnect = async () => {
+    // Reload .env in case it was updated while running
+    dotenv.config({ path: envPath, override: true });
+
+    const resolvedUri = normalizeMongoUri(customUri || process.env.MONGODB_URI || DEFAULT_MONGODB_URI);
+    const dbName = process.env.MONGODB_DB_NAME || DEFAULT_DB_NAME;
+    process.env.MONGODB_URI = resolvedUri;
+    process.env.MONGODB_DB_NAME = dbName;
+    hubCache.dbName = dbName;
+
+    hubCache.connecting = true;
+    try {
+      if (customUri && mongoose.connection.readyState === 1) {
+        await mongoose.disconnect();
+      }
+
+      if (mongoose.connection.readyState !== 1) {
+        await mongoose.connect(resolvedUri, {
+          dbName,
+          serverSelectionTimeoutMS: 8000,
+          connectTimeoutMS: 8000
+        });
+      }
+
+      hubCache.connected = true;
+      hubCache.connecting = false;
+      hubCache.clusterHost = DEFAULT_CLUSTER_HOST;
+      hubCache.dbName = mongoose.connection.name || dbName;
+      hubCache.lastError = null;
+
+      console.log(`✅ [MongoDB] Default permanent DB connected: "${hubCache.dbName}" (${DEFAULT_CLUSTER_HOST})`);
+      return { connected: true, host: hubCache.clusterHost, dbName: hubCache.dbName };
+    } catch (err) {
+      hubCache.connected = false;
+      hubCache.connecting = false;
+      hubCache.lastError = err.message;
+      console.warn('⚠️ [MongoDB] Connection failed:', err.message);
+      return { connected: false, error: err.message };
+    } finally {
+      activeConnectPromise = null;
+    }
+  };
+
+  if (!customUri) {
+    activeConnectPromise = runConnect();
+    return activeConnectPromise;
+  }
+  return runConnect();
 }
 
 /**

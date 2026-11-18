@@ -362,7 +362,9 @@ export function TvView() {
           )}
           <div className="tv-players-counter">
             <Users size={20} className="text-cyan" />
-            <span><strong>{session.playerCount}</strong> / {gridDisplayNumbers.length} CLAIMED</span>
+            <span>
+              <strong>{session.playerCount}</strong> / {session.pickableCount || gridDisplayNumbers.filter((n) => n !== '0' && n !== '00').length} CLAIMED
+            </span>
           </div>
           <button
             onClick={handleToggleSound}
@@ -483,7 +485,7 @@ export function TvView() {
                 <h3 className="tv-board-title">LUCKY NUMBERS</h3>
               </div>
               <span className="tv-board-count">
-                {entriesList.length} / {gridDisplayNumbers.length}
+                {entriesList.length} / {session.pickableCount || gridDisplayNumbers.filter((n) => n !== '0' && n !== '00').length}
               </span>
             </div>
 
@@ -496,11 +498,11 @@ export function TvView() {
                 return (
                   <div
                     key={num}
-                    className={`tv-pocket-tile ${isZero ? 'zero-tile' : ''} ${entry ? 'claimed-tile' : 'open-tile'} ${isWin ? 'winner-tile' : ''}`}
+                    className={`tv-pocket-tile ${isZero ? 'zero-tile house-zero' : ''} ${entry ? 'claimed-tile' : 'open-tile'} ${isWin ? 'winner-tile' : ''}`}
                   >
                     <span className="tv-tile-num">#{num}</span>
                     <span className="tv-tile-name">
-                      {entry ? entry.nickname : 'OPEN'}
+                      {isZero ? 'HOUSE' : (entry ? entry.nickname : 'OPEN')}
                     </span>
                   </div>
                 );

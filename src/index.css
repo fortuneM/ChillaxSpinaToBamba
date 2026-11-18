@@ -4295,4 +4295,35 @@ body {
   color: var(--neon-cyan);
 }
 
+/* Non-pickable House Zero tiles (#0 & #00 — reduces win odds) */
+.host-num-chip.house-zero,
+.player-grid-btn.house-zero {
+  background: linear-gradient(155deg, rgba(6, 78, 59, 0.55) 0%, rgba(5, 10, 24, 0.92) 100%);
+  border: 1.5px solid rgba(16, 185, 129, 0.55);
+  cursor: not-allowed;
+  opacity: 0.86;
+  box-shadow: none;
+}
+
+.host-num-chip.house-zero .chip-num,
+.player-grid-btn.house-zero .btn-num {
+  color: #6ee7b7;
+}
+
+.host-num-chip.house-zero .chip-player,
+.player-grid-btn.house-zero .btn-state-label {
+  color: #34d399;
+  font-weight: 800;
+}
+
+.tv-pocket-tile.house-zero {
+  background: linear-gradient(145deg, rgba(6, 78, 59, 0.55) 0%, rgba(5, 10, 24, 0.92) 100%);
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.tv-pocket-tile.house-zero .tv-tile-num,
+.tv-pocket-tile.house-zero .tv-tile-name {
+  color: #6ee7b7;
+}
+
 

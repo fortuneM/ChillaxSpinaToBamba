@@ -660,6 +660,7 @@ export function HostView() {
 
   // Handle tapping a number chip in the Host grid
   const handleChipClick = (num, existingEntry, pendingEntry = null) => {
+    if (String(num) === '0' || String(num) === '00') return;
     if (session?.status !== 'REGISTRATION_OPEN' || isAssigningPick) return;
 
     if (existingEntry || pendingEntry) {
@@ -1911,7 +1912,10 @@ export function HostView() {
       <div className="host-claimed-grid-card">
         <div className="grid-card-header">
           <div className="flex justify-between items-center">
-            <h4>Wheel Numbers &amp; Player Picks ({session.playerCount}/{session.wheelNumbers?.length || session.numberRange.max} Pockets)</h4>
+            <h4>
+              Wheel Numbers &amp; Player Picks ({session.playerCount}/{session.pickableCount || (gridDisplayNumbers.filter((n) => n !== '0' && n !== '00').length)} Pickable
+              {session.hasDoubleZero !== false ? ' • +2 House Zeros' : ''})
+            </h4>
             {isCashRound && (
               <span className="host-pool-badge">
                 Pool: R{session.totalBets || 0}
@@ -2148,9 +2152,10 @@ export function HostView() {
               <button
                 key={num}
                 type="button"
-                disabled={!isInteractive || isAssigningPick}
+                disabled={isZero || !isInteractive || isAssigningPick}
                 onClick={() => handleChipClick(num, entry, pendingEntry)}
-                className={`host-num-chip ${isZero ? 'zero-chip' : ''} ${entry ? 'claimed' : pendingEntry ? 'pending-approval' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive ? 'interactive' : ''}`}
+                className={`host-num-chip ${isZero ? 'zero-chip house-zero' : ''} ${entry ? 'claimed' : pendingEntry ? 'pending-approval' : 'empty'} ${isHostPick ? 'host-picked' : ''} ${isSelected ? 'selected' : ''} ${isWinner ? 'winner' : ''} ${isInteractive && !isZero ? 'interactive' : ''}`}
+                title={isZero ? `House Zero (#${num}) — Not pickable (reduces player win odds)` : undefined}
               >
                 <div className="chip-top-row">
                   <span className="chip-num">{num}</span>
@@ -2160,18 +2165,22 @@ export function HostView() {
                 <span
                   className="chip-player"
                   title={
-                    entry
-                      ? `${entry.nickname}${entry.bet_amount > 0 ? ` (Stake R${entry.bet_amount})` : ''}${entry.tx_id ? ` [${entry.tx_id}]` : ''}`
-                      : pendingEntry
-                        ? `PENDING APPROVAL: ${pendingEntry.nickname}${pendingEntry.bet_amount > 0 ? ` (R${pendingEntry.bet_amount})` : ''} — Tap to Accept or Decline`
-                        : 'Tap to claim'
+                    isZero
+                      ? `House Zero (#${num}) — Not pickable`
+                      : entry
+                        ? `${entry.nickname}${entry.bet_amount > 0 ? ` (Stake R${entry.bet_amount})` : ''}${entry.tx_id ? ` [${entry.tx_id}]` : ''}`
+                        : pendingEntry
+                          ? `PENDING APPROVAL: ${pendingEntry.nickname}${pendingEntry.bet_amount > 0 ? ` (R${pendingEntry.bet_amount})` : ''} — Tap to Accept or Decline`
+                          : 'Tap to claim'
                   }
                 >
-                  {entry
-                    ? `${entry.nickname}${isCashRound && entry.bet_amount > 0 ? ` • R${entry.bet_amount}` : ''}`
-                    : pendingEntry
-                      ? `⏳ ${pendingEntry.nickname}${isCashRound && pendingEntry.bet_amount > 0 ? ` • R${pendingEntry.bet_amount}` : ''}`
-                      : (isInteractive ? '+ Pick' : '—')}
+                  {isZero
+                    ? '🏦 HOUSE'
+                    : entry
+                      ? `${entry.nickname}${isCashRound && entry.bet_amount > 0 ? ` • R${entry.bet_amount}` : ''}`
+                      : pendingEntry
+                        ? `⏳ ${pendingEntry.nickname}${isCashRound && pendingEntry.bet_amount > 0 ? ` • R${pendingEntry.bet_amount}` : ''}`
+                        : (isInteractive ? '+ Pick' : '—')}
                 </span>
               </button>
             );

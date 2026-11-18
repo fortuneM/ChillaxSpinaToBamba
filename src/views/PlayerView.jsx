@@ -178,6 +178,9 @@ export function PlayerView() {
 
   // Request a number (requires Host acceptance before becoming ACTIVE)
   const handleClaimNumber = async (num) => {
+    if (String(num) === '0' || String(num) === '00') {
+      return;
+    }
     if (!nickname.trim()) {
       setErrorMsg('Please enter your nickname first!');
       sounds.playError();
@@ -652,33 +655,34 @@ export function PlayerView() {
               <button
                 key={num}
                 type="button"
-                disabled={isTaken || isLocked || isClaiming}
+                disabled={isZero || isTaken || isLocked || isClaiming}
                 onClick={() => handleClaimNumber(num)}
-                className={`player-grid-btn ${isZero ? 'zero-chip' : ''} ${isMyPick ? (isMyPickPending ? 'my-pending-pick' : 'my-pick') : ''} ${isTaken ? 'taken' : 'available'} ${isWinningPocket ? 'winning-pocket' : ''}`}
+                title={isZero ? `House Zero (#${num}) — Not pickable` : undefined}
+                className={`player-grid-btn ${isZero ? 'zero-chip house-zero' : ''} ${isMyPick ? (isMyPickPending ? 'my-pending-pick' : 'my-pick') : ''} ${isTaken ? 'taken' : isZero ? '' : 'available'} ${isWinningPocket ? 'winning-pocket' : ''}`}
               >
                 <span className="btn-num">{num}</span>
                 <span className="btn-state-label">
-                  {isMyPick && isMyPickApproved && (
+                  {isZero ? (
+                    '🏦 HOUSE'
+                  ) : isMyPick && isMyPickApproved ? (
                     <>
                       <Check size={11} className="inline-icon" /> ACCEPTED
                     </>
-                  )}
-                  {isMyPick && isMyPickPending && (
+                  ) : isMyPick && isMyPickPending ? (
                     <>
                       <Clock size={11} className="inline-icon" /> PENDING HOST
                     </>
-                  )}
-                  {isTaken && entry && (
+                  ) : isTaken && entry ? (
                     <>
                       <Lock size={10} className="inline-icon" /> {entry?.nickname ? entry.nickname.slice(0, 7) : 'TAKEN'}
                     </>
-                  )}
-                  {isTaken && !entry && pendingEntry && (
+                  ) : isTaken && !entry && pendingEntry ? (
                     <>
                       <Clock size={10} className="inline-icon" /> RESERVED
                     </>
+                  ) : (
+                    'OPEN'
                   )}
-                  {!isMyPick && !isTaken && (isZero ? '★ VIP ZERO' : 'OPEN')}
                 </span>
               </button>
             );
