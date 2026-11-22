@@ -1597,20 +1597,46 @@ export function HostView() {
                     })}
                   </div>
 
-                  {dailyGuard.canMakeCashWinner && dailyGuard.fairPlaySummary && (
-                    <div
-                      className="guard-build-notice"
-                      style={{
-                        borderColor: dailyGuard.isFairPityDue ? 'rgba(52, 211, 153, 0.7)' : 'rgba(0, 242, 254, 0.45)',
-                        background: dailyGuard.isFairPityDue ? 'rgba(6, 78, 59, 0.35)' : 'rgba(15, 23, 42, 0.7)'
-                      }}
-                    >
-                      <span className="text-xs" style={{ color: dailyGuard.isFairPityDue ? '#6ee7b7' : '#cbd5e1' }}>
-                        ⚖️ <strong>{dailyGuard.isFairPityDue ? 'Player Fair-Win Guarantee Ready:' : 'Player Fairness & Profit Balance:'}</strong>{' '}
-                        {dailyGuard.fairPlaySummary}
-                      </span>
-                    </div>
-                  )}
+                  {dailyGuard.canMakeCashWinner && dailyGuard.fairPlaySummary && (() => {
+                    const checkBet = Math.max(5, Number(walkInBet) || 5);
+                    const minWinForBet = Math.round(checkBet * 1.5 * 100) / 100;
+                    const hasAffordableActiveEntry = (session.entries || []).some(
+                      (e) => (Number(e.bet_amount) || 0) * 1.5 <= dailyGuard.maxPrizeThisRound
+                    );
+                    const betExceedsMaxWin = isCashRound && minWinForBet > dailyGuard.maxPrizeThisRound && !hasAffordableActiveEntry;
+                    const maxEligibleBet = Math.floor((dailyGuard.maxPrizeThisRound / 1.5) * 100) / 100;
+
+                    if (betExceedsMaxWin) {
+                      return (
+                        <div
+                          className="guard-build-notice"
+                          style={{
+                            borderColor: 'rgba(251, 191, 36, 0.75)',
+                            background: 'rgba(120, 53, 15, 0.38)'
+                          }}
+                        >
+                          <span className="text-xs" style={{ color: '#fde68a' }}>
+                            ⚠️ <strong>Stake Too High for Current Winner Budget:</strong> A <strong>R{checkBet}</strong> bet requires at least <strong>{fmtR(minWinForBet)}</strong> (1.5x) to win, but Max Win This Spin is <strong>{fmtR(dailyGuard.maxPrizeThisRound)}</strong>. Lower stake to <strong>&le; {fmtR(maxEligibleBet)}</strong> (or add more players) so the spin can pay a winner!
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        className="guard-build-notice"
+                        style={{
+                          borderColor: dailyGuard.isFairPityDue ? 'rgba(52, 211, 153, 0.7)' : 'rgba(0, 242, 254, 0.45)',
+                          background: dailyGuard.isFairPityDue ? 'rgba(6, 78, 59, 0.35)' : 'rgba(15, 23, 42, 0.7)'
+                        }}
+                      >
+                        <span className="text-xs" style={{ color: dailyGuard.isFairPityDue ? '#6ee7b7' : '#cbd5e1' }}>
+                          ⚖️ <strong>{dailyGuard.isFairPityDue ? 'Player Fair-Win Guarantee Ready:' : 'Player Fairness & Profit Balance:'}</strong>{' '}
+                          {dailyGuard.fairPlaySummary}
+                        </span>
+                      </div>
+                    );
+                  })()}
 
                   {!dailyGuard.canMakeCashWinner && (
                     <div className="guard-build-notice">

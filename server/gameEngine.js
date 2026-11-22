@@ -477,28 +477,33 @@ export class GameEngine {
     let currentRoundBets = 0;
     let currentRoundEntriesCount = 0;
     let isCurrentWeightedCash = false;
-    const openRound = db.prepare(`
-      SELECT r.id, r.prize_id, r.prize_snapshot_json, p.prize_type
+    const latestRound = db.prepare(`
+      SELECT r.id, r.status, r.prize_id, r.prize_snapshot_json, p.prize_type
       FROM rounds r
       LEFT JOIN prizes p ON r.prize_id = p.id
-      WHERE r.session_id = ? AND r.status IN ('REGISTRATION_OPEN', 'REGISTRATION_CLOSED')
+      WHERE r.session_id = ?
       ORDER BY r.round_number DESC LIMIT 1
     `).get(sessionId);
-    if (openRound && (!excludeRoundId || openRound.id !== excludeRoundId)) {
-      let openPrizeType = openRound.prize_type;
-      if (!openPrizeType && openRound.prize_snapshot_json) {
+    if (latestRound) {
+      let latestPrizeType = latestRound.prize_type;
+      if (!latestPrizeType && latestRound.prize_snapshot_json) {
         try {
-          openPrizeType = JSON.parse(openRound.prize_snapshot_json)?.prize_type;
+          latestPrizeType = JSON.parse(latestRound.prize_snapshot_json)?.prize_type;
         } catch {}
       }
-      isCurrentWeightedCash = openPrizeType === 'weighted_cash';
-      const openRow = db.prepare(`
-        SELECT COALESCE(SUM(bet_amount), 0) as total, COUNT(*) as cnt
-        FROM entries
-        WHERE round_id = ? AND status = 'ACTIVE'
-      `).get(openRound.id);
-      currentRoundBets = Number(openRow?.total || 0);
-      currentRoundEntriesCount = Number(openRow?.cnt || 0);
+      isCurrentWeightedCash = latestPrizeType === 'weighted_cash';
+      if (
+        (latestRound.status === 'REGISTRATION_OPEN' || latestRound.status === 'REGISTRATION_CLOSED') &&
+        (!excludeRoundId || latestRound.id !== excludeRoundId)
+      ) {
+        const openRow = db.prepare(`
+          SELECT COALESCE(SUM(bet_amount), 0) as total, COUNT(*) as cnt
+          FROM entries
+          WHERE round_id = ? AND status = 'ACTIVE'
+        `).get(latestRound.id);
+        currentRoundBets = Number(openRow?.total || 0);
+        currentRoundEntriesCount = Number(openRow?.cnt || 0);
+      }
     }
 
     // Customer & Repeat Participation Analytics (Section 8)
@@ -558,6 +563,10 @@ export class GameEngine {
       : 100;
 
     // Daily Collections & 30%+ Profit Guard Metrics (Shop keeps >= targetProfitMarginPct% of collected money first)
+    const allTimeCollected = Math.max(
+      Math.round((cleanCollected + currentRoundBets) * 100) / 100,
+      Math.round((dailyCollectedSettled + currentRoundBets) * 100) / 100
+    );
     const collectedToday = Math.round((dailyCollectedSettled + currentRoundBets) * 100) / 100;
     const prizesToday = Math.round(dailyCommittedCash * 100) / 100;
     const profitToday = Math.round((collectedToday - prizesToday) * 100) / 100;
@@ -567,13 +576,17 @@ export class GameEngine {
     const dailyRequiredProfitFloor = Math.round((collectedToday * targetProfitRatio) * 100) / 100;
     const dailyMaxPrizePool = Math.max(0, Math.round((collectedToday - dailyRequiredProfitFloor) * 100) / 100);
     const prizeBudgetLeft = Math.max(0, Math.round((dailyMaxPrizePool - prizesToday) * 100) / 100);
-    const effectiveRoundPrizeCap = isCurrentWeightedCash
-      ? maxSingleCashPrize
-      : Math.max(maxSingleCashPrize, 300);
-    const maxPrizeThisRound = Math.max(
-      0,
-      Math.floor(Math.min(prizeBudgetLeft, effectiveRoundPrizeCap, monthlyReserveRemaining) * 100) / 100
-    );
+
+    // Cumulative profit-protected prize budget across all sessions/rounds
+    const cumulativeRequiredFloor = Math.round((allTimeCollected * targetProfitRatio) * 100) / 100;
+    const cumulativeMaxPrizePool = Math.max(0, Math.round((allTimeCollected - cumulativeRequiredFloor - cleanCommitted) * 100) / 100);
+
+    // In 1.5x/2x/3x Cash Multiplier mode, the winner budget is self-funded by player stakes (prizeBudgetLeft),
+    // never artificially choked to R80/R100 by the static R1,000 promo reserve ceiling.
+    const maxPrizeThisRound = isCurrentWeightedCash
+      ? Math.max(0, Math.floor(Math.min(prizeBudgetLeft, maxSingleCashPrize, monthlyReserveRemaining) * 100) / 100)
+      : Math.max(0, Math.floor(Math.min(prizeBudgetLeft, cumulativeMaxPrizePool) * 100) / 100);
+    const maxSafeBetThisSpin = Math.floor((maxPrizeThisRound / 1.5) * 100) / 100;
     const unlockedWeightedTiers = [10, 20, 50, 100].filter((t) => t <= maxPrizeThisRound);
     const unlockedMultipliers = [1.5, 2, 3].filter((m) => (5 * m) <= maxPrizeThisRound);
     const maxWinnerShareRatio = Math.max(0.1, 1 - targetProfitRatio);
@@ -615,6 +628,7 @@ export class GameEngine {
       maxPrizePoolToday: dailyMaxPrizePool,
       prizeBudgetLeft,
       maxPrizeThisRound,
+      maxSafeBetThisSpin,
       unlockedWeightedTiers,
       unlockedMultipliers,
       canMakeCashWinner: canMakeCashWinnerNow,
@@ -631,9 +645,15 @@ export class GameEngine {
       ruleSummary: `Shop locks ${targetProfitMarginPct}% profit from today's collections first (${100 - targetProfitMarginPct}% max winner pool).`
     };
 
+    // In self-funded 1.5x-3x Cash Multiplier mode, do not suspend entries if the profit-guarded winner budget is positive
+    const effectiveReserveExhausted = isCurrentWeightedCash
+      ? isReserveExhausted
+      : (isReserveExhausted && prizeBudgetLeft < 7.5 && allTimeCollected > 0);
+    const effectiveNewEntrySuspended = emergencySuspended || effectiveReserveExhausted;
+
     return {
-      historicalCollected: cleanCollected,
-      allTimeCollected: Math.round((cleanCollected + currentRoundBets) * 100) / 100,
+      historicalCollected: allTimeCollected,
+      allTimeCollected,
       historicalPaidOut: cleanCommitted,
       settledCashPaid: Math.round(settledCashPaid * 100) / 100,
       outstandingCashLiabilities: Math.round(outstandingCashLiabilities * 100) / 100,
@@ -668,9 +688,9 @@ export class GameEngine {
       weeklyExposureRemaining,
       dailyExposureRemaining,
       isReserveWarning,
-      isReserveExhausted,
+      isReserveExhausted: effectiveReserveExhausted,
       emergencySuspended,
-      isNewEntrySuspended,
+      isNewEntrySuspended: effectiveNewEntrySuspended,
       netProfit,
       protectedProfitFloor,
       surplusReserve,
@@ -897,16 +917,14 @@ export class GameEngine {
     const dailyProfitFloor = dailyInflow * targetProfitRatio;
     const dailyMaxSafePayout = Math.max(0, (dailyInflow - stats.dailyCommittedCash) - dailyProfitFloor);
 
-    // Effective maximum payout that keeps BOTH today's collections AND cumulative collections at >= 30% shop profit
-    const effectiveSingleCap = Math.max(Number(stats.maxSingleCashPrize) || 100, 300);
-    const maxSafePayout = Math.min(
-      cumulativeMaxSafePayout,
-      dailyMaxSafePayout,
-      stats.monthlyReserveRemaining,
-      effectiveSingleCap
+    // Effective maximum payout that keeps BOTH today's collections AND cumulative collections at >= target shop profit
+    // In 1.5x/2x/3x Cash Multiplier mode, payouts are self-funded from the collected winner pool (not capped at R80/R100 by static reserve)
+    const maxSafePayout = Math.max(
+      0,
+      Math.floor(Math.min(cumulativeMaxSafePayout, dailyMaxSafePayout) * 100) / 100
     );
 
-    // Entries where paying 1.5x keeps the shop at or above its 30% minimum profit floor
+    // Entries where paying 1.5x keeps the shop at or above its minimum profit floor (30%–50%)
     const safeEntries = entries.filter(e => (Number(e.bet_amount) * 1.5) <= maxSafePayout);
 
     const allWheelNums = this.getWheelNumbers(session);
