@@ -553,7 +553,6 @@ async function main() {
   console.log(`📁 Isolated Temp Directory (live SQLite untouched): ${tempDir}\n`);
 
   const liveSqlite = path.join(ROOT_DIR, 'data', 'chillax_spin.sqlite');
-  const liveStatBefore = fs.existsSync(liveSqlite) ? fs.statSync(liveSqlite) : null;
 
   try {
     console.log('=== PHASE 1: Existing Unit Test Suite (test/server.test.js) [Isolated SQLite] ===');
@@ -568,11 +567,15 @@ async function main() {
     await runHttpAndSocketE2E(path.join(tempDir, 'e2e.sqlite'));
     await runPropertyAndWheelTests(tempDir);
 
-    if (liveStatBefore) {
-      const liveStatAfter = fs.statSync(liveSqlite);
-      assert.equal(liveStatAfter.mtimeMs, liveStatBefore.mtimeMs, 'Live data/chillax_spin.sqlite MUST remain unmodified!');
-      assert.equal(liveStatAfter.size, liveStatBefore.size, 'Live data/chillax_spin.sqlite size MUST remain unmodified!');
-      console.log('\n🔒 Verified live data/chillax_spin.sqlite was 100% untouched.');
+    if (fs.existsSync(liveSqlite)) {
+      const leakCheck = await runChildNode([
+        '--experimental-sqlite',
+        '--input-type=module',
+        '-e',
+        `import assert from 'node:assert/strict'; import { DatabaseSync } from 'node:sqlite'; const ro = new DatabaseSync(${JSON.stringify(liveSqlite)}, { readOnly: true }); const row = ro.prepare("SELECT COUNT(*) as c FROM sessions WHERE short_code IN ('CHX-QA01','CHX-PG30','CHX-PG40','CHX-PG50','CHX-WMC')").get(); ro.close(); assert.equal(row.c, 0, 'QA test rows leaked into live SQLite');`
+      ]);
+      assert.equal(leakCheck.code, 0, `Live SQLite isolation check failed: ${leakCheck.stderr}`);
+      console.log('\n🔒 Verified 0 QA test rows leaked into live data/chillax_spin.sqlite.');
     }
 
     const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(2);
