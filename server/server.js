@@ -651,16 +651,18 @@ async function startServer() {
   });
 
   // Connect and sync permanent DB asynchronously so HTTP/Vite proxy never blocks on boot or --watch restart
-  connectMongo()
-    .then(async (mongoConn) => {
-      if (mongoConn.connected) {
-        await syncWithChillaxGamingHub(db);
-        io.emit('mongodb:status', getMongoStatus());
-      }
-    })
-    .catch((err) => {
-      console.warn('[Startup Sync Warning]', err.message);
-    });
+  if (process.env.CHILLAX_SKIP_MONGO !== '1') {
+    connectMongo()
+      .then(async (mongoConn) => {
+        if (mongoConn.connected) {
+          await syncWithChillaxGamingHub(db);
+          io.emit('mongodb:status', getMongoStatus());
+        }
+      })
+      .catch((err) => {
+        console.warn('[Startup Sync Warning]', err.message);
+      });
+  }
 }
 
 startServer();

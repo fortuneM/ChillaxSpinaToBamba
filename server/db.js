@@ -8,11 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = process.env.CHILLAX_DB_PATH ? path.resolve(process.env.CHILLAX_DB_PATH) : path.join(dataDir, 'chillax_spin.sqlite');
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
 }
-
-const dbPath = path.join(dataDir, 'chillax_spin.sqlite');
 export const db = new DatabaseSync(dbPath);
 
 // Initialize database tables & indices

@@ -645,10 +645,9 @@ export class GameEngine {
       ruleSummary: `Shop locks ${targetProfitMarginPct}% profit from today's collections first (${100 - targetProfitMarginPct}% max winner pool).`
     };
 
-    // In self-funded 1.5x-3x Cash Multiplier mode, do not suspend entries if the profit-guarded winner budget is positive
-    const effectiveReserveExhausted = isCurrentWeightedCash
-      ? isReserveExhausted
-      : (isReserveExhausted && prizeBudgetLeft < 7.5 && allTimeCollected > 0);
+    // Self-funded 1.5x-3x Cash Multiplier mode is funded directly by player stakes and bounded
+    // by the daily Profit Guard (30%-60%), so it must never deadlock on the static R1,000 promo reserve ceiling.
+    const effectiveReserveExhausted = isCurrentWeightedCash ? isReserveExhausted : false;
     const effectiveNewEntrySuspended = emergencySuspended || effectiveReserveExhausted;
 
     return {
@@ -696,7 +695,7 @@ export class GameEngine {
       surplusReserve,
       profitMarginPct,
       consecutiveNoWinners,
-      is3xReady: prizeBudgetLeft >= 15 && surplusReserve >= 15 && monthlyReserveRemaining >= 30,
+      is3xReady: prizeBudgetLeft >= 15 && surplusReserve >= 15 && (!isCurrentWeightedCash || monthlyReserveRemaining >= 30),
       // Section 8 Essential Owner Dashboard figures
       totalSpinEntries,
       uniquePlayers,
