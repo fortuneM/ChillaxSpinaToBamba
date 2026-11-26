@@ -1,5 +1,5 @@
 import React from 'react';
-import { Tv, Smartphone, Shield, Sparkles, CheckCircle, Trophy, Zap, Crown } from 'lucide-react';
+import { Tv, Smartphone, Shield, Crown } from 'lucide-react';
 
 export function LandingView() {
   return (
@@ -64,43 +64,6 @@ export function LandingView() {
           </div>
         </div>
       </header>
-
-      {/* Feature Architecture Matrix */}
-      <section className="landing-specs">
-        <h2 className="specs-title">
-          <Sparkles size={20} className="inline-icon text-gold" /> Engineered for Excitement &amp; Guaranteed Shop Profit
-        </h2>
-        <div className="specs-grid">
-          <div className="spec-item">
-            <CheckCircle size={20} className="text-cyan inline-icon" />
-            <div>
-              <strong>30%+ Daily Profit-Guard Engine:</strong>
-              <span> Automatically protects your daily shop profit floor first and funds cash multiplier winners from the remaining prize pool.</span>
-            </div>
-          </div>
-          <div className="spec-item">
-            <CheckCircle size={20} className="text-cyan inline-icon" />
-            <div>
-              <strong>Atomic Number Claiming:</strong>
-              <span> Real-time WebSocket &amp; SQLite/MongoDB locking guarantees zero collisions between mobile QR players and front-desk walk-in picks.</span>
-            </div>
-          </div>
-          <div className="spec-item">
-            <CheckCircle size={20} className="text-cyan inline-icon" />
-            <div>
-              <strong>Chillax Gaming Hub Cloud Sync:</strong>
-              <span> Every entry, spin result, and redemption automatically syncs to your permanent MongoDB Atlas database and sales reports.</span>
-            </div>
-          </div>
-          <div className="spec-item">
-            <CheckCircle size={20} className="text-cyan inline-icon" />
-            <div>
-              <strong>Synthesized Arcade Sound &amp; FX:</strong>
-              <span> Mechanical peg ticks, suspenseful deceleration, and royal victory fanfare generated live via Web Audio API.</span>
-            </div>
-          </div>
-        </div>
-      </section>
 
       {/* Footer */}
       <footer className="landing-footer">
