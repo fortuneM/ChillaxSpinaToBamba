@@ -549,6 +549,7 @@ export function resolveShopForSession(session) {
  * so its in-memory transaction cache refreshes immediately for live Sales Reports.
  */
 export async function notifyChillaxHubServer(payload = {}) {
+  if (process.env.CHILLAX_SKIP_MONGO === '1') return;
   const hubBaseUrl = (process.env.CHILLAX_HUB_API_URL || 'http://localhost:4000').replace(/\/$/, '');
   try {
     const controller = new AbortController();

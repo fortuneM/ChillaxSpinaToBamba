@@ -1,10 +1,11 @@
 import { io } from 'socket.io-client';
+import { getSocketUrl } from './backendConfig.js';
 
 let socketInstance = null;
 
 export function getSocket() {
   if (!socketInstance) {
-    socketInstance = io(window.location.origin, {
+    socketInstance = io(getSocketUrl(), {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 20,
       reconnectionDelay: 1000

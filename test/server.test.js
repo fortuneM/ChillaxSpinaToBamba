@@ -1,7 +1,10 @@
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db } from '../server/db.js';
 import { GameEngine } from '../server/gameEngine.js';
 import { buildMongoUri, getMongoStatus, hubCache, resolveLinkedShopForUser } from '../server/mongo.js';
+import { resolveBackendBaseUrl } from '../src/utils/backendConfig.js';
 
 // Mock Socket.io for testing
 class MockSocketIO {
@@ -705,7 +708,25 @@ async function runTests() {
   assert.strictEqual(recoveredSnap.status, 'RESULT', 'Recovered stuck SPINNING round must finalize cleanly to RESULT');
   console.log('  ✅ Stuck SPINNING round recovery passed');
 
-  console.log('\n🎉 ALL 18 TEST SUITES PASSED FLAWLESSLY!\n');
+  // 19. Vercel SPA Rewrite, Node 22 Engines & Backend Config Helper
+  console.log('Test 19: Deployment Config (vercel.json, Node 22 engines & backendConfig)');
+  const rootDir = path.resolve(import.meta.dirname, '..');
+  const vercelCfg = JSON.parse(fs.readFileSync(path.join(rootDir, 'vercel.json'), 'utf8'));
+  assert.strictEqual(vercelCfg.outputDirectory, 'dist');
+  assert(
+    Array.isArray(vercelCfg.rewrites) &&
+    vercelCfg.rewrites.some((r) => r.source === '/(.*)' && r.destination === '/index.html'),
+    'vercel.json must rewrite client routes to /index.html'
+  );
+  const pkgCfg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  assert(String(pkgCfg.engines?.node || '').includes('22'), 'package.json engines.node must specify Node 22+');
+  assert(fs.readFileSync(path.join(rootDir, '.nvmrc'), 'utf8').trim().startsWith('22.'), '.nvmrc must pin Node 22+');
+  assert.strictEqual(resolveBackendBaseUrl('https://spin.onrender.com///'), 'https://spin.onrender.com');
+  assert.strictEqual(resolveBackendBaseUrl('not-a-url'), '');
+  assert.strictEqual(resolveBackendBaseUrl(''), '');
+  console.log('  ✅ Deployment & SPA routing configuration verified');
+
+  console.log('\n🎉 ALL 19 TEST SUITES PASSED FLAWLESSLY!\n');
   process.exit(0);
 }
 

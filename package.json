@@ -4,11 +4,15 @@
   "description": "Chillax Spin & Win - Real-time Android TV & Phone Controller Game",
   "main": "server/server.js",
   "type": "module",
+  "engines": {
+    "node": ">=22.11.0"
+  },
   "scripts": {
     "dev:server": "node --watch --experimental-sqlite server/server.js",
     "dev:client": "vite",
     "dev": "vite",
     "build": "vite build",
+    "render:build": "npm install --include=dev && npm run build",
     "start": "node --experimental-sqlite server/server.js",
     "test": "node --experimental-sqlite test/server.test.js"
   },
