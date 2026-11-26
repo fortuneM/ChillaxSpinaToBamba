@@ -4,7 +4,7 @@ import path from 'node:path';
 import { db } from '../server/db.js';
 import { GameEngine } from '../server/gameEngine.js';
 import { buildMongoUri, getMongoStatus, hubCache, resolveLinkedShopForUser } from '../server/mongo.js';
-import { resolveBackendBaseUrl } from '../src/utils/backendConfig.js';
+import { resolveBackendBaseUrl, RENDER_BACKEND_URL } from '../src/utils/backendConfig.js';
 
 // Mock Socket.io for testing
 class MockSocketIO {
@@ -715,14 +715,19 @@ async function runTests() {
   assert.strictEqual(vercelCfg.outputDirectory, 'dist');
   assert(
     Array.isArray(vercelCfg.rewrites) &&
+    vercelCfg.rewrites.some((r) => r.source === '/api/:path*' && r.destination === `${RENDER_BACKEND_URL}/api/:path*`) &&
+    vercelCfg.rewrites.some((r) => r.source === '/socket.io/:path*' && r.destination === `${RENDER_BACKEND_URL}/socket.io/:path*`) &&
     vercelCfg.rewrites.some((r) => r.source === '/(.*)' && r.destination === '/index.html'),
-    'vercel.json must rewrite client routes to /index.html'
+    'vercel.json must proxy /api + /socket.io to Render and rewrite SPA routes to /index.html'
   );
   const pkgCfg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
   assert(String(pkgCfg.engines?.node || '').includes('22'), 'package.json engines.node must specify Node 22+');
   assert(fs.readFileSync(path.join(rootDir, '.nvmrc'), 'utf8').trim().startsWith('22.'), '.nvmrc must pin Node 22+');
-  assert.strictEqual(resolveBackendBaseUrl('https://spin.onrender.com///'), 'https://spin.onrender.com');
-  assert.strictEqual(resolveBackendBaseUrl('not-a-url'), '');
+  assert.strictEqual(resolveBackendBaseUrl('', 'chillax-spina-to-bamba.vercel.app'), 'https://chillaxspinatobamba.onrender.com');
+  assert.strictEqual(resolveBackendBaseUrl('', 'chillaxspinatobamba.onrender.com'), '');
+  assert.strictEqual(resolveBackendBaseUrl('', 'localhost'), '');
+  assert.strictEqual(resolveBackendBaseUrl('https://spin.onrender.com///', 'chillax-spina-to-bamba.vercel.app'), 'https://spin.onrender.com');
+  assert.strictEqual(resolveBackendBaseUrl('not-a-url', 'chillax-spina-to-bamba.vercel.app'), '');
   assert.strictEqual(resolveBackendBaseUrl(''), '');
   console.log('  ✅ Deployment & SPA routing configuration verified');
 
